@@ -1,0 +1,25 @@
+[model]
+model_id = "tencent/AuK-Flash"
+qwen_model_id = "Qwen/Qwen2.5-Omni-3B"
+
+[conditioner]
+backend = "transformers"
+device = "cpu"
+dtype = "fp32"
+quantization = "none"
+
+[generator]
+backend = "pytorch"
+device = "cpu"
+dtype = "fp32"
+quantization = "none"
+
+[vae]
+backend = "pytorch"
+device = "cpu"
+dtype = "fp32"
+quantization = "none"
+
+[runtime]
+seed = 1234
+num_threads = 0
