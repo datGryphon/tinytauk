@@ -21,6 +21,7 @@
               ruff
               ffmpeg
               libsndfile
+              zlib
               pkg-config
               git
               git-lfs
@@ -30,6 +31,7 @@
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.libsndfile
               pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
             ];
 
             shellHook = ''
