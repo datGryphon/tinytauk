@@ -74,9 +74,9 @@ import json
 import math
 import os
 import time
+import wave
 from pathlib import Path
 
-import soundfile as sf
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -122,6 +122,16 @@ def similarity(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, float 
             F.cosine_similarity(actual.float().flatten(), expected.float().flatten(), dim=0)
         ),
     }
+
+
+def write_pcm16_wav(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
+    samples = audio.squeeze(0).contiguous().to(torch.float32).clamp(-1.0, 1.0)
+    pcm = (samples * 32767.0).round().to(torch.int16).numpy().tobytes()
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm)
 
 
 before = memory_sample()
@@ -194,14 +204,7 @@ vae_started = time.perf_counter()
 audio = vae.decode(actual).detach().cpu()
 vae_decode_seconds = time.perf_counter() - vae_started
 wav_path = out_path.with_suffix(".wav")
-samples = audio.squeeze(0).contiguous().to(torch.float32).numpy()
-sf.write(
-    str(wav_path),
-    samples,
-    int(vae.sample_rate),
-    format="WAV",
-    subtype="PCM_16",
-)
+write_pcm16_wav(wav_path, audio, int(vae.sample_rate))
 after_decode = memory_sample()
 
 baseline_audio_path = out_path.parent / "fp32-audio.pt"
