@@ -12,7 +12,7 @@ fi
 
 OUT_DIR="${OUT_DIR:-benchmarks/results/bean-flux2-quant}"
 MIN_WEIGHT_ELEMENTS="${MIN_WEIGHT_ELEMENTS:-1000000}"
-MODES="${MODES:-fp32 int8-core int8-all}"
+MODES="${MODES:-fp32 int8-attn int8-ff int8-core int8-all}"
 mkdir -p "$OUT_DIR"
 
 COND_PATH="$OUT_DIR/conditioning.pt"
@@ -55,7 +55,7 @@ fi
 
 for mode in $MODES; do
   case "$mode" in
-    fp32|int8-core|int8-all) ;;
+    fp32|int8-attn|int8-ff|int8-core|int8-all) ;;
     *) echo "Unknown mode: $mode" >&2; exit 2 ;;
   esac
 
@@ -76,6 +76,7 @@ import os
 import time
 from pathlib import Path
 
+import soundfile as sf
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -89,6 +90,7 @@ from tinytauk.quant.dynamic import (
 )
 from tinytauk.reference import DEFAULT_INSTRUCTION, memory_sample, resolve_auk_snapshot
 from tinytauk.types import Conditioning, GenerationRequest
+from tinytauk.vae.pytorch import PyTorchVAE
 
 mode = os.environ["MODE"]
 out_path = Path(os.environ["OUT_PATH"])
@@ -98,13 +100,36 @@ conditioning = Conditioning(
     attention_mask=torch.load(os.environ["MASK_PATH"], map_location="cpu", weights_only=True),
 )
 _, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = checkpoint_path.parent
+
+
+def similarity(actual: torch.Tensor, expected: torch.Tensor) -> dict[str, float | None]:
+    if actual.shape != expected.shape or not actual.numel():
+        return {
+            "max_abs_error": None,
+            "mean_abs_error": None,
+            "snr_db": None,
+            "cosine_similarity": None,
+        }
+    error = actual.float() - expected.float()
+    signal_power = float(expected.float().pow(2).mean())
+    noise_power = float(error.pow(2).mean())
+    return {
+        "max_abs_error": float(error.abs().max()),
+        "mean_abs_error": float(error.abs().mean()),
+        "snr_db": math.inf if noise_power == 0.0 else 10.0 * math.log10(signal_power / noise_power),
+        "cosine_similarity": float(
+            F.cosine_similarity(actual.float().flatten(), expected.float().flatten(), dim=0)
+        ),
+    }
+
 
 before = memory_sample()
 load_started = time.perf_counter()
 generator = PyTorchAuKGenerator(
     ModelConfig(),
     ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
-    model_snapshot=checkpoint_path.parent,
+    model_snapshot=snapshot,
 )
 load_seconds = time.perf_counter() - load_started
 after_load = memory_sample()
@@ -114,12 +139,16 @@ selected_names: tuple[str, ...] = ()
 selected_weight_elements = 0
 quantize_seconds = 0.0
 if mode != "fp32":
-    include_sensitive = mode == "int8-all"
     selected_names = select_dynamic_int8_linears(
         generator.transformer,
         min_weight_elements=min_weight_elements,
-        include_sensitive=include_sensitive,
+        include_sensitive=mode == "int8-all",
     )
+    if mode == "int8-attn":
+        selected_names = tuple(name for name in selected_names if ".attn." in name)
+    elif mode == "int8-ff":
+        selected_names = tuple(name for name in selected_names if ".ff" in name)
+
     modules = dict(generator.transformer.named_modules())
     selected_weight_elements = sum(
         int(module.weight.numel())
@@ -141,34 +170,46 @@ actual = generator.generate_latents(
 generate_seconds = time.perf_counter() - generate_started
 after_generate = memory_sample()
 
-baseline_path = out_path.parent / "fp32-latent.pt"
+baseline_latent_path = out_path.parent / "fp32-latent.pt"
 if mode == "fp32":
-    torch.save(actual, baseline_path)
-    expected = actual
+    torch.save(actual, baseline_latent_path)
+    expected_latent = actual
 else:
-    if not baseline_path.is_file():
-        raise SystemExit(f"Missing FP32 baseline latent: {baseline_path}; include fp32 in MODES first")
-    expected = torch.load(baseline_path, map_location="cpu", weights_only=True)
+    if not baseline_latent_path.is_file():
+        raise SystemExit(f"Missing FP32 baseline latent: {baseline_latent_path}; include fp32 in MODES first")
+    expected_latent = torch.load(baseline_latent_path, map_location="cpu", weights_only=True)
+latent_metrics = similarity(actual, expected_latent)
 
-shape_match = actual.shape == expected.shape
-if shape_match and actual.numel():
-    error = actual - expected
-    max_abs_error = float(error.abs().max())
-    mean_abs_error = float(error.abs().mean())
-    signal_power = float(expected.float().pow(2).mean())
-    noise_power = float(error.float().pow(2).mean())
-    snr_db = math.inf if noise_power == 0.0 else 10.0 * math.log10(signal_power / noise_power)
-    cosine_similarity = float(F.cosine_similarity(actual.flatten(), expected.flatten(), dim=0))
+del generator
+gc.collect()
+
+vae_load_started = time.perf_counter()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+vae_load_seconds = time.perf_counter() - vae_load_started
+vae_started = time.perf_counter()
+audio = vae.decode(actual).detach().cpu()
+vae_decode_seconds = time.perf_counter() - vae_started
+sf.write(out_path.with_suffix(".wav"), audio.squeeze(0).numpy(), vae.sample_rate, subtype="PCM_16")
+after_decode = memory_sample()
+
+baseline_audio_path = out_path.parent / "fp32-audio.pt"
+if mode == "fp32":
+    torch.save(audio, baseline_audio_path)
+    expected_audio = audio
 else:
-    max_abs_error = None
-    mean_abs_error = None
-    snr_db = None
-    cosine_similarity = None
+    if not baseline_audio_path.is_file():
+        raise SystemExit(f"Missing FP32 baseline audio: {baseline_audio_path}; include fp32 in MODES first")
+    expected_audio = torch.load(baseline_audio_path, map_location="cpu", weights_only=True)
+audio_metrics = similarity(audio, expected_audio)
 
 result = {
     "mode": mode,
     "shape": list(actual.shape),
-    "shape_match": shape_match,
+    "shape_match": actual.shape == expected_latent.shape,
     "dtype": str(actual.dtype),
     "min_weight_elements": min_weight_elements,
     "selected_linear_count": len(selected_names),
@@ -179,19 +220,28 @@ result = {
     "quantize_seconds": quantize_seconds,
     "generate_seconds": generate_seconds,
     "realtime_factor": generate_seconds / 3.0,
-    "max_abs_error": max_abs_error,
-    "mean_abs_error": mean_abs_error,
-    "snr_db": snr_db,
-    "cosine_similarity": cosine_similarity,
+    "latent": latent_metrics,
+    "vae_load_seconds": vae_load_seconds,
+    "vae_decode_seconds": vae_decode_seconds,
+    "audio": audio_metrics,
+    "wav_path": str(out_path.with_suffix(".wav")),
     "rss_before_mb": before.current_rss_mb,
     "rss_after_load_mb": after_load.current_rss_mb,
     "rss_after_quant_mb": after_quant.current_rss_mb,
     "rss_after_generate_mb": after_generate.current_rss_mb,
+    "rss_after_decode_mb": after_decode.current_rss_mb,
+    "generator_peak_rss_mb": max(
+        before.peak_rss_mb,
+        after_load.peak_rss_mb,
+        after_quant.peak_rss_mb,
+        after_generate.peak_rss_mb,
+    ),
     "peak_rss_mb": max(
         before.peak_rss_mb,
         after_load.peak_rss_mb,
         after_quant.peak_rss_mb,
         after_generate.peak_rss_mb,
+        after_decode.peak_rss_mb,
     ),
     "torch_num_threads": torch.get_num_threads(),
     "torch_num_interop_threads": torch.get_num_interop_threads(),
@@ -221,11 +271,12 @@ if fp32 is not None:
             continue
         comparisons[mode] = {
             "generator_speedup_vs_fp32": fp32["generate_seconds"] / result["generate_seconds"],
-            "rss_after_quant_delta_mb_vs_fp32_load": (
-                result["rss_after_quant_mb"] - fp32["rss_after_load_mb"]
-            ),
-            "snr_db": result["snr_db"],
-            "cosine_similarity": result["cosine_similarity"],
+            "latent_snr_db": result["latent"]["snr_db"],
+            "latent_cosine_similarity": result["latent"]["cosine_similarity"],
+            "audio_snr_db": result["audio"]["snr_db"],
+            "audio_cosine_similarity": result["audio"]["cosine_similarity"],
+            "selected_linear_count": result["selected_linear_count"],
+            "wav_path": result["wav_path"],
         }
     summary["comparisons"] = comparisons
 print("\n================ SUMMARY ================")
