@@ -18,7 +18,9 @@ def normalize_text(text: str) -> str:
     """Normalize transcript text for speech-intelligibility scoring."""
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    cleaned = "".join(char if char.isalnum() or char.isspace() else " " for char in normalized)
+    cleaned = "".join(
+        char if char.isalnum() or char.isspace() else " " for char in normalized
+    )
     return " ".join(cleaned.split())
 
 
@@ -27,7 +29,7 @@ def _edit_distance(reference: Sequence[str], hypothesis: Sequence[str]) -> int:
     for ref_index, ref_unit in enumerate(reference, start=1):
         current = [ref_index]
         for hyp_index, hyp_unit in enumerate(hypothesis, start=1):
-            substitution = previous[hyp_index - 1] + (ref_unit != hyp_unit)
+            substitution = previous[hyp_index - 1] + int(ref_unit != hyp_unit)
             deletion = previous[hyp_index] + 1
             insertion = current[hyp_index - 1] + 1
             current.append(min(substitution, deletion, insertion))
