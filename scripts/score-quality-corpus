@@ -50,12 +50,31 @@ def resolve_device(requested: str) -> torch.device:
     return device
 
 
-def load_cache(path: Path, model_id: str, retranscribe: bool) -> dict[str, Any]:
+def normalize_level(waveform: torch.Tensor, target_rms: float) -> torch.Tensor:
+    if target_rms <= 0.0 or not waveform.numel():
+        return waveform
+    rms = float(torch.sqrt(waveform.float().square().mean()))
+    if rms <= 1e-8:
+        return waveform
+    normalized = waveform * (target_rms / rms)
+    peak = float(normalized.abs().max())
+    if peak > 0.99:
+        normalized = normalized * (0.99 / peak)
+    return normalized
+
+
+def load_cache(
+    path: Path,
+    model_id: str,
+    preprocess: dict[str, Any],
+    retranscribe: bool,
+) -> dict[str, Any]:
+    fresh = {"model_id": model_id, "preprocess": preprocess, "transcripts": {}}
     if retranscribe or not path.is_file():
-        return {"model_id": model_id, "transcripts": {}}
+        return fresh
     payload: dict[str, Any] = json.loads(path.read_text())
-    if payload.get("model_id") != model_id:
-        return {"model_id": model_id, "transcripts": {}}
+    if payload.get("model_id") != model_id or payload.get("preprocess") != preprocess:
+        return fresh
     return payload
 
 
@@ -68,6 +87,12 @@ parser.add_argument(
 )
 parser.add_argument("--model", default=os.environ.get("QUALITY_ASR_MODEL", "openai/whisper-small.en"))
 parser.add_argument("--device", default=os.environ.get("QUALITY_DEVICE", "auto"))
+parser.add_argument(
+    "--target-rms",
+    type=float,
+    default=float(os.environ.get("QUALITY_TARGET_RMS", "0.1")),
+    help="Normalize audio to this RMS before ASR; set 0 to score raw levels",
+)
 parser.add_argument("--retranscribe", action="store_true")
 args = parser.parse_args()
 
@@ -84,12 +109,17 @@ cases: list[dict[str, Any]] = list(render["cases"])
 device = resolve_device(args.device)
 dtype = torch.float16 if device.type == "cuda" else torch.float32
 print(f"Loading ASR model {args.model} on {device} ({dtype})")
+print(f"ASR input level normalization target RMS: {args.target_rms}")
 processor: Any = AutoProcessor.from_pretrained(args.model)
 model: Any = AutoModelForSpeechSeq2Seq.from_pretrained(args.model, torch_dtype=dtype)
 model = model.to(device).eval()
 
+preprocess = {
+    "sample_rate": 16000,
+    "target_rms": args.target_rms,
+}
 cache_path = args.result_dir / "transcripts.json"
-cache = load_cache(cache_path, args.model, args.retranscribe)
+cache = load_cache(cache_path, args.model, preprocess, args.retranscribe)
 transcripts: dict[str, dict[str, str]] = cache.setdefault("transcripts", {})
 
 
@@ -97,11 +127,20 @@ def transcribe(path: Path) -> str:
     waveform, sample_rate = read_wav(path)
     if sample_rate != 16000:
         waveform = AF.resample(waveform, sample_rate, 16000)
+    waveform = normalize_level(waveform, args.target_rms)
     inputs: Any = processor(waveform.numpy(), sampling_rate=16000, return_tensors="pt")
     input_features = inputs.input_features.to(device=device, dtype=dtype)
     with torch.inference_mode():
         generated_ids = model.generate(input_features)
     return str(processor.batch_decode(generated_ids, skip_special_tokens=True)[0]).strip()
+
+
+def normalize_for_score(text: str) -> str:
+    tokenizer: Any = getattr(processor, "tokenizer", None)
+    normalizer: Any = getattr(tokenizer, "normalize", None)
+    if callable(normalizer):
+        return str(normalizer(text)).strip()
+    return text
 
 
 for mode in modes:
@@ -129,13 +168,17 @@ for mode in modes:
         case_id = str(case["id"])
         target = str(case["spoken_text"])
         transcript = transcripts[mode][case_id]
-        canonical_wer = word_error_rate(target, transcript)
-        canonical_cer = char_error_rate(target, transcript)
+        normalized_target = normalize_for_score(target)
+        normalized_transcript = normalize_for_score(transcript)
+        canonical_wer = word_error_rate(normalized_target, normalized_transcript)
+        canonical_cer = char_error_rate(normalized_target, normalized_transcript)
         canonical_wers.append(canonical_wer)
         canonical_cers.append(canonical_cer)
         result: dict[str, Any] = {
             "target": target,
             "transcript": transcript,
+            "normalized_target": normalized_target,
+            "normalized_transcript": normalized_transcript,
             "wer": asdict(canonical_wer),
             "cer": asdict(canonical_cer),
         }
@@ -143,12 +186,14 @@ for mode in modes:
             fp32_case_scores[case_id] = result
         else:
             fp32_transcript = transcripts["fp32"][case_id]
-            regression_wer = word_error_rate(fp32_transcript, transcript)
-            regression_cer = char_error_rate(fp32_transcript, transcript)
+            normalized_fp32 = normalize_for_score(fp32_transcript)
+            regression_wer = word_error_rate(normalized_fp32, normalized_transcript)
+            regression_cer = char_error_rate(normalized_fp32, normalized_transcript)
             regression_wers.append(regression_wer)
             regression_cers.append(regression_cer)
             result["vs_fp32"] = {
                 "fp32_transcript": fp32_transcript,
+                "normalized_fp32_transcript": normalized_fp32,
                 "wer": asdict(regression_wer),
                 "cer": asdict(regression_cer),
                 "wer_delta": canonical_wer.rate - fp32_case_scores[case_id]["wer"]["rate"],
@@ -178,6 +223,8 @@ for mode in modes:
 output = {
     "asr_model": args.model,
     "device": str(device),
+    "audio_preprocess": preprocess,
+    "text_normalizer": "whisper-english" if callable(getattr(getattr(processor, "tokenizer", None), "normalize", None)) else "tinytauk-basic",
     "render_git_rev": render["git_rev"],
     "scores": scores,
 }
