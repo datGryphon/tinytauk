@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from tinytauk.quality import ErrorRate, char_error_rate, combine_error_rates, normalize_text, word_error_rate
+from tinytauk.quality import (
+    ErrorRate,
+    char_error_rate,
+    combine_error_rates,
+    normalize_text,
+    word_error_rate,
+)
 
 
 def test_normalize_text_for_speech_scoring() -> None:
