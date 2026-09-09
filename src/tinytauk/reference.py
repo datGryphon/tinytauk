@@ -15,12 +15,10 @@ from typing import Any
 import torch
 from huggingface_hub import snapshot_download
 
-
 DEFAULT_AUK_REPO = "tencent/AuK-Flash"
 DEFAULT_QWEN_REPO = "Qwen/Qwen2.5-Omni-3B"
 DEFAULT_INSTRUCTION = (
-    "Speak in a calm, natural conversational voice: "
-    "TinyTAuK reference oracle baseline generation."
+    "Speak in a calm, natural conversational voice: TinyTAuK reference oracle baseline generation."
 )
 
 
@@ -112,11 +110,7 @@ def resolve_auk_snapshot(repo_id: str) -> tuple[Path, Path]:
             raise RuntimeError(f"Unable to identify AuK config in {snapshot}: {yaml_files}")
         config_path = yaml_files[0]
 
-    checkpoints = [
-        path
-        for path in snapshot.glob("*.safetensors")
-        if "vae" not in path.name.lower()
-    ]
+    checkpoints = [path for path in snapshot.glob("*.safetensors") if "vae" not in path.name.lower()]
     if not checkpoints:
         raise RuntimeError(f"Unable to identify AuK checkpoint in {snapshot}")
     checkpoint_path = max(checkpoints, key=lambda path: path.stat().st_size)
