@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "neutral-short",
+      "spoken_text": "The package arrived safely this morning.",
+      "instruction": "Speak in a calm, natural conversational voice: The package arrived safely this morning.",
+      "gen_seconds": 3.5,
+      "seed": 1001
+    },
+    {
+      "id": "contractions",
+      "spoken_text": "I can't tell whether it's ready, but we'll check again soon.",
+      "instruction": "Speak naturally with clear articulation: I can't tell whether it's ready, but we'll check again soon.",
+      "gen_seconds": 4.5,
+      "seed": 1002
+    },
+    {
+      "id": "numbers-date",
+      "spoken_text": "The backup finished on September ninth at three forty-five in the afternoon.",
+      "instruction": "Speak clearly at a steady pace: The backup finished on September ninth at three forty-five in the afternoon.",
+      "gen_seconds": 5.5,
+      "seed": 1003
+    },
+    {
+      "id": "technical",
+      "spoken_text": "The CUDA kernel completed while the GPU cache remained stable.",
+      "instruction": "Read this technical sentence clearly and naturally: The CUDA kernel completed while the GPU cache remained stable.",
+      "gen_seconds": 4.5,
+      "seed": 1004
+    },
+    {
+      "id": "acronyms",
+      "spoken_text": "The HTTP API returned a JSON response from the local server.",
+      "instruction": "Speak clearly in a neutral technical tone: The HTTP API returned a JSON response from the local server.",
+      "gen_seconds": 5.0,
+      "seed": 1005
+    },
+    {
+      "id": "proper-terms",
+      "spoken_text": "Kubernetes connected to PostgreSQL through the Tailscale network.",
+      "instruction": "Read the following sentence carefully: Kubernetes connected to PostgreSQL through the Tailscale network.",
+      "gen_seconds": 4.5,
+      "seed": 1006
+    },
+    {
+      "id": "question",
+      "spoken_text": "Did the second worker finish before the network connection timed out?",
+      "instruction": "Ask this as a natural question: Did the second worker finish before the network connection timed out?",
+      "gen_seconds": 4.5,
+      "seed": 1007
+    },
+    {
+      "id": "expressive",
+      "spoken_text": "I can't believe the benchmark finally passed!",
+      "instruction": "Speak with mild excitement while remaining clear: I can't believe the benchmark finally passed!",
+      "gen_seconds": 3.5,
+      "seed": 1008
+    },
+    {
+      "id": "long-prose",
+      "spoken_text": "After the service restarted, the worker loaded the model, processed the request, and returned clean audio without dropping a single word.",
+      "instruction": "Speak in a natural podcast narration style: After the service restarted, the worker loaded the model, processed the request, and returned clean audio without dropping a single word.",
+      "gen_seconds": 9.0,
+      "seed": 1009
+    }
+  ]
+}
