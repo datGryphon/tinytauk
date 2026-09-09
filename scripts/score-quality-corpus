@@ -75,9 +75,10 @@ summary_path = args.result_dir / "render-summary.json"
 if not summary_path.is_file():
     raise SystemExit(f"Missing corpus render summary: {summary_path}")
 render: dict[str, Any] = json.loads(summary_path.read_text())
-modes: list[str] = list(render["modes"])
-if "fp32" not in modes:
+render_modes: list[str] = list(render["modes"])
+if "fp32" not in render_modes:
     raise SystemExit("Quality scoring requires an fp32 render baseline")
+modes = ["fp32", *(mode for mode in render_modes if mode != "fp32")]
 cases: list[dict[str, Any]] = list(render["cases"])
 
 device = resolve_device(args.device)
@@ -100,8 +101,7 @@ def transcribe(path: Path) -> str:
     input_features = inputs.input_features.to(device=device, dtype=dtype)
     with torch.inference_mode():
         generated_ids = model.generate(input_features)
-    text = str(processor.batch_decode(generated_ids, skip_special_tokens=True)[0]).strip()
-    return text
+    return str(processor.batch_decode(generated_ids, skip_special_tokens=True)[0]).strip()
 
 
 for mode in modes:
