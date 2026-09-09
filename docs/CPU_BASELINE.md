@@ -61,19 +61,49 @@ Re-run with:
 bash scripts/cpu-vae-parity
 ```
 
-## Gate 4: end-to-end BF16 CPU baseline
+## Gate 4: end-to-end CPU baseline — passed
 
-`TinyTAuK.generate()` now wires the three standalone components together. The default `profiles/cpu-baseline.toml` keeps Qwen and Flux2 in BF16 and the VAE in FP32, which is the first practical CPU baseline rather than an exact upstream-emulation mode.
+`TinyTAuK.generate()` wires the three standalone components together. The first BF16/BF16 Neptune run produced valid 24 kHz audio with a `12.29 GB` peak RSS and `6.12x` realtime factor.
 
-Run:
+A one-time Neptune dtype sweep showed that dtype performance is strongly CPU-specific:
+
+| Qwen | Flux2 | RTF | Peak RSS | Oracle SNR |
+| --- | --- | ---: | ---: | ---: |
+| BF16 | BF16 | 5.988x | 12.31 GB | -1.25 dB |
+| BF16 | FP32 | 3.098x | 13.17 GB | 6.49 dB |
+| FP32 | BF16 | 8.006x | 22.59 GB | -1.28 dB |
+| FP32 | FP32 | 5.398x | 22.61 GB | 121.93 dB |
+
+On Neptune, Flux2 FP32 is substantially faster and numerically closer to the oracle than Flux2 BF16. These results are characterization only; Neptune is not the deployment target.
+
+Re-run with:
 
 ```bash
 bash scripts/cpu-e2e-baseline
+bash scripts/cpu-dtype-sweep
 ```
 
-The benchmark writes:
+## Gate 5: Bean deployment qualification
 
-- `benchmarks/results/cpu-baseline/baseline.wav`
-- `benchmarks/results/cpu-baseline/baseline.json`
+Bean is the deployment target. The initial qualification profile uses FP32 for Qwen, Flux2, and VAE because the Ryzen 5 Pro 2400G has no native BF16 execution path. The goal is to establish deployment behavior before spending time on quantization or CPU-specific tuning.
 
-It reports component load times, per-stage generation time, overall realtime factor, and process RSS/peak RSS. The structural gate requires exactly three seconds of finite 24 kHz mono audio. Audio quality is evaluated separately before quantization experiments begin.
+The qualification run defaults to a 10-second utterance and records component load/generation times, total RSS/peak RSS, PyTorch thread counts, CPU/RAM information, waveform statistics, and an 8-minute latency gate.
+
+Run on Bean:
+
+```bash
+bash scripts/bean-qualify
+```
+
+Optional duration override:
+
+```bash
+GEN_SECONDS=15 bash scripts/bean-qualify
+```
+
+Outputs:
+
+- `benchmarks/results/bean-qualify/bean-qualify.wav`
+- `benchmarks/results/bean-qualify/bean-qualify.json`
+
+If a normal 5–15 second utterance stays within memory, sounds acceptable, and completes in under roughly 8 minutes, the CPU runtime is qualified for TinyTalk integration. Only optimize further when Bean measurements show a concrete memory or latency bottleneck.
