@@ -193,7 +193,15 @@ vae_load_seconds = time.perf_counter() - vae_load_started
 vae_started = time.perf_counter()
 audio = vae.decode(actual).detach().cpu()
 vae_decode_seconds = time.perf_counter() - vae_started
-sf.write(out_path.with_suffix(".wav"), audio.squeeze(0).numpy(), vae.sample_rate, subtype="PCM_16")
+wav_path = out_path.with_suffix(".wav")
+samples = audio.squeeze(0).contiguous().to(torch.float32).numpy()
+sf.write(
+    str(wav_path),
+    samples,
+    int(vae.sample_rate),
+    format="WAV",
+    subtype="PCM_16",
+)
 after_decode = memory_sample()
 
 baseline_audio_path = out_path.parent / "fp32-audio.pt"
@@ -224,7 +232,7 @@ result = {
     "vae_load_seconds": vae_load_seconds,
     "vae_decode_seconds": vae_decode_seconds,
     "audio": audio_metrics,
-    "wav_path": str(out_path.with_suffix(".wav")),
+    "wav_path": str(wav_path),
     "rss_before_mb": before.current_rss_mb,
     "rss_after_load_mb": after_load.current_rss_mb,
     "rss_after_quant_mb": after_quant.current_rss_mb,
