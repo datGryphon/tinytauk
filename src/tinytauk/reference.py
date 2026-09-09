@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 import resource
@@ -40,6 +41,15 @@ class MemorySample:
 
 
 @dataclass(frozen=True)
+class TensorArtifact:
+    path: str
+    shape: list[int]
+    dtype: str
+    numel: int
+    sha256: str
+
+
+@dataclass(frozen=True)
 class ReferenceResult:
     auk_repo: str
     qwen_repo: str
@@ -50,14 +60,19 @@ class ReferenceResult:
     generated_seconds: float
     sample_rate: int
     seed: int
+    asset_resolve_seconds: float
     load_seconds: float
     generate_seconds: float
+    realtime_factor: float
     total_seconds: float
     rss_before_load_mb: float
     rss_after_load_mb: float
     rss_after_generate_mb: float
     peak_rss_mb: float
     output_wav: str
+    conditioning: TensorArtifact
+    context_mask: TensorArtifact
+    sampled_latent: TensorArtifact
     python: str
     platform: str
     torch: str
@@ -118,6 +133,53 @@ def _messages(instruction: str) -> list[dict[str, Any]]:
     ]
 
 
+def _tensor_digest(tensor: torch.Tensor) -> str:
+    packed = tensor.detach().cpu().contiguous().view(torch.uint8)
+    return hashlib.sha256(packed.numpy().tobytes()).hexdigest()
+
+
+def _save_tensor(path: Path, tensor: torch.Tensor) -> TensorArtifact:
+    value = tensor.detach().cpu().contiguous()
+    torch.save(value, path)
+    return TensorArtifact(
+        path=str(path),
+        shape=list(value.shape),
+        dtype=str(value.dtype),
+        numel=value.numel(),
+        sha256=_tensor_digest(value),
+    )
+
+
+def _install_capture_hooks(engine: Any) -> dict[str, torch.Tensor]:
+    captures: dict[str, torch.Tensor] = {}
+
+    original_encode_text = engine.model.encode_text
+
+    def capture_encode_text(cond_inputs: Any, device: Any) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden, mask = original_encode_text(cond_inputs, device)
+        captures["conditioning"] = hidden.detach().cpu()
+        captures["context_mask"] = mask.detach().cpu()
+        return hidden, mask
+
+    original_sample = engine.model.sample
+
+    def capture_sample(*args: Any, **kwargs: Any) -> Any:
+        output, trajectory = original_sample(*args, **kwargs)
+        captures["sampled_latent"] = trajectory[-1].detach().cpu()
+        return output, trajectory
+
+    engine.model.encode_text = capture_encode_text
+    engine.model.sample = capture_sample
+    return captures
+
+
+def _require_capture(captures: dict[str, torch.Tensor], name: str) -> torch.Tensor:
+    try:
+        return captures[name]
+    except KeyError as exc:
+        raise RuntimeError(f"Reference oracle did not capture {name}") from exc
+
+
 def run_reference(config: ReferenceConfig) -> ReferenceResult:
     try:
         infer_auk: Any = import_module("auk.infer.infer_auk")
@@ -132,7 +194,10 @@ def run_reference(config: ReferenceConfig) -> ReferenceResult:
 
     started = time.perf_counter()
     before_load = memory_sample()
+
+    resolve_started = time.perf_counter()
     config_path, checkpoint_path = resolve_auk_snapshot(config.auk_repo)
+    asset_resolve_seconds = time.perf_counter() - resolve_started
 
     load_started = time.perf_counter()
     engine = infer_auk.AukInfer(
@@ -144,6 +209,8 @@ def run_reference(config: ReferenceConfig) -> ReferenceResult:
     )
     load_seconds = time.perf_counter() - load_started
     after_load = memory_sample()
+
+    captures = _install_capture_hooks(engine)
 
     generate_started = time.perf_counter()
     audio, sample_rate = engine.generate(
@@ -157,6 +224,19 @@ def run_reference(config: ReferenceConfig) -> ReferenceResult:
     infer_auk.save_audio(audio, sample_rate, str(wav_path))
     generated_seconds = float(audio.shape[-1]) / float(sample_rate)
 
+    conditioning = _save_tensor(
+        config.output_dir / "conditioning.pt",
+        _require_capture(captures, "conditioning"),
+    )
+    context_mask = _save_tensor(
+        config.output_dir / "context_mask.pt",
+        _require_capture(captures, "context_mask"),
+    )
+    sampled_latent = _save_tensor(
+        config.output_dir / "sampled_latent.pt",
+        _require_capture(captures, "sampled_latent"),
+    )
+
     result = ReferenceResult(
         auk_repo=config.auk_repo,
         qwen_repo=config.qwen_repo,
@@ -167,8 +247,10 @@ def run_reference(config: ReferenceConfig) -> ReferenceResult:
         generated_seconds=generated_seconds,
         sample_rate=int(sample_rate),
         seed=config.seed,
+        asset_resolve_seconds=asset_resolve_seconds,
         load_seconds=load_seconds,
         generate_seconds=generate_seconds,
+        realtime_factor=generate_seconds / generated_seconds,
         total_seconds=time.perf_counter() - started,
         rss_before_load_mb=before_load.current_rss_mb,
         rss_after_load_mb=after_load.current_rss_mb,
@@ -179,6 +261,9 @@ def run_reference(config: ReferenceConfig) -> ReferenceResult:
             after_generate.peak_rss_mb,
         ),
         output_wav=str(wav_path),
+        conditioning=conditioning,
+        context_mask=context_mask,
+        sampled_latent=sampled_latent,
         python=sys.version.split()[0],
         platform=platform.platform(),
         torch=str(torch.__version__),
