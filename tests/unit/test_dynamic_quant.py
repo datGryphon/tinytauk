@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import torch
+import pytest
 from torch import nn
 
 from tinytauk.quant.dynamic import is_sensitive_generator_linear, select_dynamic_int8_linears
@@ -45,5 +45,5 @@ def test_select_dynamic_int8_linears_aggressive() -> None:
 
 def test_select_dynamic_int8_linears_rejects_invalid_threshold() -> None:
     model = _ToyGenerator()
-    with torch.testing.assertRaisesRegex(ValueError, "positive"):
+    with pytest.raises(ValueError, match="positive"):
         select_dynamic_int8_linears(model, min_weight_elements=0)
