@@ -23,6 +23,7 @@ CASES_PATH="$CASES_PATH" FIXTURE_DIR="$FIXTURE_DIR" REBUILD_CONDITIONING="${REBU
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -40,15 +41,38 @@ fixture_dir = Path(os.environ["FIXTURE_DIR"])
 rebuild = os.environ["REBUILD_CONDITIONING"] == "1"
 payload: dict[str, Any] = json.loads(cases_path.read_text())
 cases: list[dict[str, Any]] = payload["cases"]
-missing = [
-    case
-    for case in cases
-    if rebuild
-    or not (fixture_dir / f"{case['id']}.conditioning.pt").is_file()
-    or not (fixture_dir / f"{case['id']}.mask.pt").is_file()
-]
+
+
+def fingerprint(case: dict[str, Any]) -> str:
+    value = {
+        "instruction": str(case["instruction"]),
+        "spoken_text": str(case["spoken_text"]),
+        "gen_seconds": float(case["gen_seconds"]),
+        "seed": int(case["seed"]),
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def fixture_current(case: dict[str, Any]) -> bool:
+    if rebuild:
+        return False
+    case_id = str(case["id"])
+    conditioning_path = fixture_dir / f"{case_id}.conditioning.pt"
+    mask_path = fixture_dir / f"{case_id}.mask.pt"
+    metadata_path = fixture_dir / f"{case_id}.json"
+    if not conditioning_path.is_file() or not mask_path.is_file() or not metadata_path.is_file():
+        return False
+    try:
+        metadata: dict[str, Any] = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return metadata.get("fingerprint") == fingerprint(case)
+
+
+missing = [case for case in cases if not fixture_current(case)]
 if not missing:
-    print("Conditioning fixtures already complete.")
+    print("Conditioning fixtures already complete and current.")
     raise SystemExit(0)
 
 _, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
@@ -71,6 +95,14 @@ for index, case in enumerate(missing, start=1):
         raise SystemExit(f"Conditioner returned no attention mask for {case_id}")
     torch.save(conditioning.values.detach().cpu(), fixture_dir / f"{case_id}.conditioning.pt")
     torch.save(conditioning.attention_mask.detach().cpu(), fixture_dir / f"{case_id}.mask.pt")
+    metadata = {
+        "fingerprint": fingerprint(case),
+        "instruction": str(case["instruction"]),
+        "spoken_text": str(case["spoken_text"]),
+        "gen_seconds": float(case["gen_seconds"]),
+        "seed": int(case["seed"]),
+    }
+    (fixture_dir / f"{case_id}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
     del conditioning
     gc.collect()
 PY
@@ -242,6 +274,10 @@ for index, case in enumerate(cases, start=1):
     gc.collect()
 
 after = memory_sample()
+audio_rms = math.sqrt(
+    sum(case["rms"] ** 2 * case["generated_seconds"] for case in case_results)
+    / total_requested_seconds
+)
 result = {
     "mode": mode,
     "git_rev": git_rev,
@@ -260,6 +296,7 @@ result = {
     "vae_rtf": total_vae_seconds / total_requested_seconds,
     "total_hot_seconds": total_generator_seconds + total_vae_seconds,
     "hot_rtf": (total_generator_seconds + total_vae_seconds) / total_requested_seconds,
+    "audio_rms": audio_rms,
     "peak_rss_mb": max(before.peak_rss_mb, after.peak_rss_mb),
     "torch_num_threads": torch.get_num_threads(),
     "torch_num_interop_threads": torch.get_num_interop_threads(),
@@ -283,6 +320,7 @@ modes = os.environ["MODES"].split()
 results: dict[str, Any] = {
     mode: json.loads((out_dir / mode / "render.json").read_text()) for mode in modes
 }
+fp32_rms = float(results["fp32"]["audio_rms"]) if "fp32" in results else 0.0
 summary = {
     "git_rev": os.environ["GIT_REV"],
     "cases_path": os.environ["CASES_PATH"],
@@ -293,6 +331,10 @@ summary = {
             "generator_rtf": result["generator_rtf"],
             "vae_rtf": result["vae_rtf"],
             "hot_rtf": result["hot_rtf"],
+            "audio_rms": result["audio_rms"],
+            "rms_ratio_vs_fp32": (
+                result["audio_rms"] / fp32_rms if fp32_rms > 0.0 else None
+            ),
             "selected_linear_count": result["selected_linear_count"],
         }
         for mode, result in results.items()
