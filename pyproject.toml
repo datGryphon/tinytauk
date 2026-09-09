@@ -24,6 +24,7 @@ dependencies = [
   "torchaudio==2.7.1",
   "torchvision==0.22.1",
   "transformers>=4.52,<5",
+  "x-transformers>=1.31.14",
 ]
 
 [project.optional-dependencies]
@@ -32,7 +33,6 @@ quant = [
 ]
 reference = [
   "torchdiffeq",
-  "x-transformers>=1.31.14",
 ]
 
 [dependency-groups]
