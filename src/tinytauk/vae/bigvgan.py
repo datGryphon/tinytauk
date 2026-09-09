@@ -355,6 +355,16 @@ class BigVGANDecoder(nn.Module):
         latents = latents.float()
         return latents * torch.sqrt(self.global_log_std.float()) + self.global_mean.float()
 
+    def remove_weight_norm(self) -> None:
+        """Materialize weight-normalized convolutions for inference."""
+        remove_weight_norm(self.conv_pre)
+        for stage in self.ups:
+            for layer in stage:
+                remove_weight_norm(layer)
+        for block in self.resblocks:
+            block.remove_weight_norm()
+        remove_weight_norm(self.conv_post)
+
     def forward(self, latents: torch.Tensor) -> torch.Tensor:
         x = self.conv_pre(latents)
         for index, stage in enumerate(self.ups):

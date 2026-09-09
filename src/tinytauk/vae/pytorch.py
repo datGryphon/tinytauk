@@ -62,6 +62,7 @@ class PyTorchVAE:
 
         self.decoder = BigVGANDecoder(decoder_config)
         self._load_decoder_weights(checkpoint_path)
+        self.decoder.remove_weight_norm()
         self.decoder = self.decoder.to(device=self.device, dtype=torch.float32).eval()
         self.decoder.requires_grad_(False)
 
