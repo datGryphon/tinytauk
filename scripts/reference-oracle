@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+"$ROOT/.venv/bin/python" - <<'PY'
+from dataclasses import asdict
+import json
+
+from tinytauk.reference import ReferenceConfig, run_reference
+
+result = run_reference(ReferenceConfig())
+print(json.dumps(asdict(result), indent=2, sort_keys=True))
+PY

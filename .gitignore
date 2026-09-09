@@ -21,6 +21,7 @@ benchmarks/results/*
 !benchmarks/results/.gitkeep
 models/
 checkpoints/
+.reference/
 
 # Editors / OS
 .DS_Store
