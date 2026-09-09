@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "Missing .venv; run uv sync --extra quant first." >&2
+  exit 1
+fi
+
+OUT_DIR="benchmarks/results/cpu-dtype-sweep"
+mkdir -p "$OUT_DIR"
+
+run_case() {
+  local name="$1"
+  local conditioner_dtype="$2"
+  local generator_dtype="$3"
+
+  echo "=== $name: conditioner=$conditioner_dtype generator=$generator_dtype vae=fp32 ==="
+  CASE_NAME="$name" \
+  CONDITIONER_DTYPE="$conditioner_dtype" \
+  GENERATOR_DTYPE="$generator_dtype" \
+  "$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+from tinytauk.config import RuntimeConfig
+from tinytauk.reference import DEFAULT_INSTRUCTION, memory_sample
+
+name = os.environ["CASE_NAME"]
+conditioner_dtype = os.environ["CONDITIONER_DTYPE"]
+generator_dtype = os.environ["GENERATOR_DTYPE"]
+out_dir = Path("benchmarks/results/cpu-dtype-sweep")
+out_dir.mkdir(parents=True, exist_ok=True)
+
+config = RuntimeConfig.from_dict(
+    {
+        "model": {
+            "model_id": "tencent/AuK-Flash",
+            "qwen_model_id": "Qwen/Qwen2.5-Omni-3B",
+        },
+        "conditioner": {
+            "backend": "transformers",
+            "device": "cpu",
+            "dtype": conditioner_dtype,
+            "quantization": "none",
+        },
+        "generator": {
+            "backend": "pytorch",
+            "device": "cpu",
+            "dtype": generator_dtype,
+            "quantization": "none",
+        },
+        "vae": {
+            "backend": "pytorch",
+            "device": "cpu",
+            "dtype": "fp32",
+            "quantization": "none",
+        },
+        "runtime": {"seed": 42, "num_threads": 0},
+    }
+)
+
+before = memory_sample()
+load_started = time.perf_counter()
+engine = TinyTAuK.from_config(config)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+result = engine.generate(DEFAULT_INSTRUCTION, gen_seconds=3.0, seed=42)
+after_generate = memory_sample()
+
+if not isinstance(result.audio, torch.Tensor):
+    raise SystemExit("TinyTAuK returned a non-tensor audio result")
+audio = result.audio.detach().cpu().to(torch.float32)
+if audio.ndim != 2 or audio.shape[0] != 1:
+    raise SystemExit(f"Unexpected audio shape: {tuple(audio.shape)}")
+if not torch.isfinite(audio).all():
+    raise SystemExit("Generated audio contains NaN or Inf")
+
+wav_path = out_dir / f"{name}.wav"
+json_path = out_dir / f"{name}.json"
+torchaudio.save(wav_path, audio, result.sample_rate)
+
+oracle_path = Path("benchmarks/results/reference-oracle/reference.wav")
+comparison: dict[str, float | bool | None] = {
+    "oracle_shape_match": None,
+    "oracle_max_abs_error": None,
+    "oracle_mean_abs_error": None,
+    "oracle_snr_db": None,
+}
+if oracle_path.is_file():
+    oracle, oracle_sr = torchaudio.load(oracle_path)
+    shape_match = oracle_sr == result.sample_rate and oracle.shape == audio.shape
+    comparison["oracle_shape_match"] = shape_match
+    if shape_match and audio.numel():
+        error = audio - oracle
+        max_error = float(error.abs().max())
+        mean_error = float(error.abs().mean())
+        signal_power = float(oracle.square().mean())
+        noise_power = float(error.square().mean())
+        snr_db = math.inf if noise_power == 0.0 else 10.0 * math.log10(signal_power / noise_power)
+        comparison.update(
+            {
+                "oracle_max_abs_error": max_error,
+                "oracle_mean_abs_error": mean_error,
+                "oracle_snr_db": snr_db,
+            }
+        )
+
+report = {
+    "case": name,
+    "conditioner_dtype": conditioner_dtype,
+    "generator_dtype": generator_dtype,
+    "vae_dtype": "fp32",
+    "audio_shape": list(audio.shape),
+    "sample_rate": result.sample_rate,
+    "generated_seconds": result.generated_seconds,
+    "peak_amplitude": float(audio.abs().max()) if audio.numel() else 0.0,
+    "rms": float(torch.sqrt(torch.mean(audio.square()))) if audio.numel() else 0.0,
+    "load_seconds": load_seconds,
+    "load_stage_seconds": engine.load_stage_seconds,
+    "generate_seconds": result.wall_seconds,
+    "generate_stage_seconds": result.stage_seconds,
+    "realtime_factor": result.wall_seconds / result.generated_seconds,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "rss_after_generate_mb": after_generate.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after_load.peak_rss_mb, after_generate.peak_rss_mb),
+    "output_wav": str(wav_path),
+    **comparison,
+}
+json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+print(json.dumps(report, indent=2, sort_keys=True))
+PY
+}
+
+# Fresh process per case so model residency and ru_maxrss do not contaminate the next result.
+run_case bf16-bf16 bf16 bf16
+run_case bf16-fp32 bf16 fp32
+run_case fp32-bf16 fp32 bf16
+run_case fp32-fp32 fp32 fp32
+
+"$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+out_dir = Path("benchmarks/results/cpu-dtype-sweep")
+rows = []
+for name in ("bf16-bf16", "bf16-fp32", "fp32-bf16", "fp32-fp32"):
+    data = json.loads((out_dir / f"{name}.json").read_text())
+    rows.append(
+        {
+            "case": name,
+            "rtf": round(data["realtime_factor"], 3),
+            "generate_s": round(data["generate_seconds"], 3),
+            "conditioning_s": round(data["generate_stage_seconds"]["conditioning"], 3),
+            "generator_s": round(data["generate_stage_seconds"]["generator"], 3),
+            "vae_s": round(data["generate_stage_seconds"]["vae"], 3),
+            "peak_rss_mb": round(data["peak_rss_mb"], 1),
+            "oracle_snr_db": None
+            if data["oracle_snr_db"] is None
+            else round(data["oracle_snr_db"], 2),
+        }
+    )
+
+(out_dir / "summary.json").write_text(json.dumps(rows, indent=2) + "\n")
+print("=== dtype sweep summary ===")
+print(json.dumps(rows, indent=2))
+PY
