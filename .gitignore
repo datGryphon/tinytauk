@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+
+# Nix
+.direnv/
+result
+
+# Local artifacts
+.env
+*.wav
+*.mp3
+*.flac
+benchmarks/results/*
+!benchmarks/results/.gitkeep
+models/
+checkpoints/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
