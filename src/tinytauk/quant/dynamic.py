@@ -69,7 +69,7 @@ def apply_dynamic_int8_linears(model: nn.Module, module_names: Iterable[str]) ->
         raise ValueError("No Linear modules selected for dynamic INT8 quantization")
     converted = cast(
         nn.Module,
-        quantize_dynamic(
+        quantize_dynamic(  # type: ignore[no-untyped-call]
             model,
             qconfig_spec=names,
             dtype=torch.qint8,
