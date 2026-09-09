@@ -90,4 +90,5 @@ class PyTorchVAE:
         value = latents.to(device=self.device, dtype=torch.float32)
         value = self.decoder.denormalize(value)
         value = value.permute(0, 2, 1)
-        return self.decoder(value).to(torch.float32)
+        decoded = cast(torch.Tensor, self.decoder(value))
+        return decoded.to(torch.float32)
