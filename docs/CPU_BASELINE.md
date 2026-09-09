@@ -6,7 +6,7 @@ The CPU baseline is implemented incrementally against the captured upstream AuK-
 
 `TransformersConditioner` owns Qwen2.5-Omni Thinker inference and AuK's learned layer fusion without importing the upstream `auk` package.
 
-For exact oracle comparison, `upstream_parity=True` reproduces upstream's BF16-load-then-FP32-promotion behavior. The normal TinyTAuK path keeps Qwen at the configured dtype and will be evaluated separately after end-to-end FP32 parity is established.
+For exact oracle comparison, `upstream_parity=True` reproduces upstream's BF16-load-then-FP32-promotion behavior. The normal TinyTAuK path keeps Qwen at the configured dtype.
 
 Neptune result on 2026-09-09:
 
@@ -24,15 +24,15 @@ bash scripts/cpu-conditioning-parity
 
 ## Gate 2: Flux2Edit sampled latent — passed
 
-The second gate ports the AuK-Flash Flux2Edit transformer and fixed four-step Euler sampler into TinyTAuK. It consumes the captured `conditioning.pt` and `context_mask.pt` directly, isolating the generator from Qwen.
+The standalone AuK-Flash Flux2Edit transformer and fixed four-step Euler sampler reproduce the oracle latent exactly in FP32.
 
 Neptune result on 2026-09-09:
 
 - output shape: `[1, 150, 64]`
 - exact equality: true
 - max absolute error: `0.0`
-- four-step generation time: `5.118 s`
-- realtime factor for 3 s of latent audio: `1.706x`
+- generation time: `5.118 s`
+- realtime factor: `1.706x`
 - peak RSS for the isolated generator process: `11.98 GB`
 
 Re-run with:
@@ -41,20 +41,39 @@ Re-run with:
 bash scripts/cpu-generator-parity
 ```
 
-## Gate 3: BigVGAN VAE decode
+## Gate 3: BigVGAN decode — passed
 
-The third gate ports only the decoder half of `BigVGANFlowVAE`. TinyTAuK does not need the VAE encoder or normalizing flow for instruction-only synthesis, so they are intentionally omitted from this baseline.
+The standalone decoder-only BigVGAN path consumes the oracle sampled latent and reproduces the serialized reference WAV within one 16-bit PCM LSB.
 
-The parity runner consumes the exact captured `sampled_latent.pt`, denormalizes it with the checkpoint's global statistics, decodes it to waveform samples, and compares against the oracle `reference.wav`.
+Neptune result on 2026-09-09:
 
-Because the oracle WAV is serialized through `torchaudio.save`, the pass criterion permits at most one 16-bit PCM least-significant bit of error:
+- output shape: `[1, 72000]`
+- sample rate: `24000 Hz`
+- max absolute error: `2.246e-06`
+- WAV tolerance: `3.052e-05`
+- decode time: `2.277 s`
+- realtime factor: `0.759x`
+- peak RSS for the isolated VAE process: `1.55 GB`
+
+Re-run with:
 
 ```bash
 bash scripts/cpu-vae-parity
 ```
 
-The runner reports decode time, realtime factor, RSS, waveform shape, sample rate, and max/mean absolute error.
+## Gate 4: end-to-end BF16 CPU baseline
 
-## Next gate
+`TinyTAuK.generate()` now wires the three standalone components together. The default `profiles/cpu-baseline.toml` keeps Qwen and Flux2 in BF16 and the VAE in FP32, which is the first practical CPU baseline rather than an exact upstream-emulation mode.
 
-After VAE parity passes, wire the standalone conditioner, generator, and VAE through `TinyTAuK.generate()` and measure the complete resident CPU pipeline before beginning quantization.
+Run:
+
+```bash
+bash scripts/cpu-e2e-baseline
+```
+
+The benchmark writes:
+
+- `benchmarks/results/cpu-baseline/baseline.wav`
+- `benchmarks/results/cpu-baseline/baseline.json`
+
+It reports component load times, per-stage generation time, overall realtime factor, and process RSS/peak RSS. The structural gate requires exactly three seconds of finite 24 kHz mono audio. Audio quality is evaluated separately before quantization experiments begin.

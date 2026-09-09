@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,3 +27,4 @@ class GenerationResult:
     sample_rate: int
     generated_seconds: float
     wall_seconds: float
+    stage_seconds: dict[str, float] = field(default_factory=dict)

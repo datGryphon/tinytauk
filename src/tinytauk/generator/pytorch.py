@@ -25,9 +25,9 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 class PyTorchAuKGenerator:
     """Standalone AuK-Flash Flux2Edit + four-step CPU sampler.
 
-    The current parity gate deliberately supports instruction-only, batch-one
-    generation. Reference-audio/editing support is added after this path matches
-    the upstream sampled latent.
+    The current baseline supports instruction-only, batch-one generation.
+    Reference-audio/editing support is added after the text-only CPU path is
+    qualified end to end.
     """
 
     def __init__(
@@ -38,7 +38,7 @@ class PyTorchAuKGenerator:
         model_snapshot: str | Path | None = None,
     ) -> None:
         if config.quantization != "none":
-            raise ValueError("CPU generator parity does not quantize yet")
+            raise ValueError("CPU generator baseline does not quantize yet")
 
         self.model_config = model
         self.config = config
@@ -102,7 +102,7 @@ class PyTorchAuKGenerator:
         conditioning: Conditioning,
     ) -> torch.Tensor:
         if request.reference_audio is not None:
-            raise NotImplementedError("reference-audio generation is not in the first CPU parity gate")
+            raise NotImplementedError("reference-audio generation is not in the CPU baseline yet")
         if not isinstance(conditioning.values, torch.Tensor):
             raise TypeError("conditioning.values must be a torch.Tensor")
         if conditioning.attention_mask is not None and not isinstance(
@@ -118,7 +118,7 @@ class PyTorchAuKGenerator:
         torch.manual_seed(seed)
         # Mirror CFMEdit.sample exactly: draw one [duration, channels] tensor,
         # then add the batch dimension. This removes RNG-layout ambiguity from
-        # the exact parity gate.
+        # the exact FP32 parity gate.
         latent = torch.randn(
             (target_len, self.latent_dim),
             device=self.device,
@@ -137,7 +137,10 @@ class PyTorchAuKGenerator:
         )
         empty_ref_mask = torch.zeros((1, 0), device=self.device, dtype=torch.bool)
 
-        times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=torch.float32)
+        # FP32 preserves exact oracle parity. Lower-precision CPU baselines keep
+        # the time grid in the model dtype so Linear inputs and latent updates do
+        # not silently promote back to FP32 outside an autocast region.
+        times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=self.dtype)
         for index in range(len(_FLASH_T_GRID) - 1):
             velocity = self.transformer(
                 x=latent,
