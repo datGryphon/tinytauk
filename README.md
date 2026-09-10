@@ -1,38 +1,26 @@
-# TinyTAuK
+# tinytauk
 
-TinyTAuK is a standalone Python/PyTorch inference runtime for Tencent Hunyuan AuK-Flash, focused on memory-efficient CPU deployment and compatibility with the official model checkpoints.
+Memory-efficient AuK-Flash inference runtime for CPU environments.
 
-TinyTAuK implements the AuK-Flash inference path without requiring the upstream `auk` Python package at runtime:
-
-```text
-instruction
-  -> Qwen2.5-Omni Thinker
-  -> AuK learned hidden-state fusion
-  -> Flux2Edit four-step sampler
-  -> BigVGAN decoder
-  -> 24 kHz waveform
-```
-
-The project was built against the official AuK implementation as a reference oracle and is intended to be consumed as a library by higher-level TTS systems such as TinyTalk. It is not an HTTP service and does not own dialogue orchestration, chunking, retry policy, stitching, or output encoding.
+TinyTAuK loads the official Tencent Hunyuan AuK-Flash checkpoints directly. It
+is a library/CLI, not a TTS server; TinyTalk owns serving, chunking, validation,
+retries, and audio stitching.
 
 ## Status
 
-Version `0.1.0` supports:
+Version `0.1.0` supports text/instruction TTS with:
 
-- standalone AuK-Flash text/instruction inference;
-- exact FP32 parity checks against a pinned upstream AuK reference;
-- independent dtype/quantization configuration for conditioner, generator, and VAE;
-- dynamic INT8 quantization for the large Flux2 Linear layers while retaining sensitive modules in FP32;
-- INT8 weight-only Qwen text-transformer weights for lower steady-state RAM use;
-- FP32 Qwen audio-tower retention so reference-audio conditioning can be added without changing the model-loading architecture;
-- optional `torch.compile`/Inductor VAE decode;
-- CPU benchmark and speech-quality tooling.
+- Qwen2.5-Omni conditioning and AuK hidden-state fusion;
+- AuK-Flash four-step Flux2 generation;
+- BigVGAN waveform decode;
+- INT8 weight-only Qwen text weights;
+- dynamic INT8 Flux2 core weights;
+- FP32 Inductor-compiled VAE.
 
-Reference-audio generation is not implemented yet. `TinyTAuK.generate()` reserves a `reference_audio` argument, but the current Flux2 generation path raises `NotImplementedError` when it is used.
+Reference-audio generation is not implemented yet. The Qwen audio tower is
+retained for that path.
 
-## Installation
-
-The repository includes a Nix development shell and an `uv` lockfile. The optimized Bean profile requires the `quant` extra for TorchAO:
+## Setup
 
 ```bash
 nix develop
@@ -40,23 +28,20 @@ uv sync --extra quant
 ./scripts/check
 ```
 
-TinyTAuK downloads the configured official model checkpoints through Hugging Face on first use. Model weights and generated audio are not stored in the repository.
-
-## Generate speech
-
-The recommended CPU profile is `profiles/bean.toml`:
+## CLI
 
 ```bash
 uv run --extra quant tinytauk generate \
   --profile profiles/bean.toml \
   --seconds 9 \
   --output output.wav \
-  'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully and all health checks passed.".'
+  'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully.".'
 ```
 
-The command prints generated duration and per-stage timings as JSON after writing the WAV.
+The command writes a 24 kHz WAV and prints generation timing as JSON.
 
-The compiled VAE is lazy: the first request for a new Inductor graph can be substantially slower than subsequent requests. Long-running services should load one `TinyTAuK` instance and perform a disposable startup generation at the normal serving duration before reporting ready.
+The VAE compiles lazily on first use. Long-running callers should keep one
+`TinyTAuK` instance resident and run one disposable generation before serving.
 
 ## Python API
 
@@ -69,51 +54,42 @@ result = engine.generate(
     'The content to speak is: "The service restarted successfully.".',
     gen_seconds=9,
 )
-
-print(result.sample_rate)
-print(result.generated_seconds)
-print(result.stage_seconds)
 ```
 
-`GenerationResult.audio` is a CPU `torch.Tensor`. TinyTAuK deliberately leaves HTTP serving, request queues, transcript validation, retries, and audio stitching to the caller.
+`result.audio` is a CPU `torch.Tensor`; `sample_rate`, `generated_seconds`, and
+per-stage timings are also returned.
 
 ## Bean profile
 
-`profiles/bean.toml` is the current low-memory CPU deployment profile:
+`profiles/bean.toml` is the current CPU deployment profile:
 
-- Qwen text-transformer Linear weights: INT8 weight-only;
-- Qwen audio tower: FP32;
-- Flux2 large non-sensitive Linear layers: dynamic INT8;
-- Flux2 sensitive projections/norm paths: FP32;
-- VAE: FP32 with Inductor;
-- PyTorch intra-op threads: 4.
+| Component | Runtime |
+| --- | --- |
+| Qwen text transformer | INT8 weight-only |
+| Qwen audio tower | FP32 |
+| Flux2 | dynamic INT8 core policy |
+| VAE | FP32 + Inductor |
+| PyTorch threads | 4 |
 
-The optimization choices and qualification results are documented in [`docs/CPU_BASELINE.md`](docs/CPU_BASELINE.md) and [`docs/QUALITY_BENCHMARK.md`](docs/QUALITY_BENCHMARK.md).
-
-Run the current Bean benchmark with:
+Benchmark it with:
 
 ```bash
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/bean-bench
 ```
 
-Results and generated WAVs are written under `benchmarks/results/` and ignored by Git.
+See `docs/CPU_BASELINE.md` for the measurements behind this profile and
+`docs/QUALITY_BENCHMARK.md` for the speech-quality gate.
 
 ## Reference oracle
 
-The standalone implementation can be checked against a pinned upstream AuK commit. The reference checkout is development-only and ignored by Git.
-
-See [`docs/REFERENCE_ORACLE.md`](docs/REFERENCE_ORACLE.md).
-
-## Development
-
 ```bash
-./scripts/check
+bash scripts/setup-reference
+bash scripts/reference-oracle
 ```
 
-runs Ruff linting/format checks, strict mypy, and the unit test suite.
+The reference checkout and generated artifacts are ignored by Git. See
+`docs/REFERENCE_ORACLE.md`.
 
-Additional profiling and qualification scripts under `scripts/` preserve the measurements used to select the current CPU profile.
+## License
 
-## Licensing
-
-TinyTAuK is MIT-licensed. Portions of the standalone Flux2 and BigVGAN implementations are adapted from upstream projects with compatible licenses. See [`THIRD_PARTY.md`](THIRD_PARTY.md) for attribution and license details.
+MIT. Adapted upstream code and licenses are listed in `THIRD_PARTY.md`.
