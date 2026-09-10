@@ -3,7 +3,7 @@ from pathlib import Path
 from tinytauk.config import RuntimeConfig
 
 
-def test_cpu_profile_loads() -> None:
+def test_cpu_baseline_profile_loads() -> None:
     config = RuntimeConfig.from_toml(Path("profiles/cpu-baseline.toml"))
     assert config.model.model_id == "tencent/AuK-Flash"
     assert config.conditioner.device == "cpu"
@@ -31,8 +31,8 @@ def test_component_compile_settings_load() -> None:
     assert config.vae.compile_dynamic is False
 
 
-def test_bean_profile_uses_memory_optimized_conditioner() -> None:
-    config = RuntimeConfig.from_toml(Path("profiles/bean.toml"))
+def test_cpu_profile_uses_memory_optimized_conditioner() -> None:
+    config = RuntimeConfig.from_toml(Path("profiles/cpu.toml"))
     assert config.conditioner.dtype == "fp32"
     assert config.conditioner.quantization == "int8-weight-only"
     assert config.generator.quantization == "int8"
