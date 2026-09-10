@@ -3,8 +3,8 @@
 Memory-efficient AuK-Flash inference runtime for CPU environments.
 
 TinyTAuK loads the official Tencent Hunyuan AuK-Flash checkpoints directly. It
-is a library/CLI, not a TTS server; TinyTalk owns serving, chunking, validation,
-retries, and audio stitching.
+is a library/CLI, not a TTS server; callers own serving, request queues,
+validation, retries, chunking, and audio stitching.
 
 ## Status
 
@@ -32,23 +32,25 @@ uv sync
 
 ```bash
 uv run tinytauk generate \
-  --profile profiles/cpu.toml \
   --seconds 9 \
   --output output.wav \
   'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully.".'
 ```
 
-The command writes a 24 kHz WAV and prints generation timing as JSON.
+The command uses the built-in CPU configuration, writes a 24 kHz WAV, and
+prints generation timing as JSON. Pass `--profile` to use a TOML runtime
+profile instead.
 
 The VAE compiles lazily on first use. Long-running callers should keep one
 `TinyTAuK` instance resident and run one disposable generation before serving.
+A single instance processes one generation at a time.
 
 ## Python API
 
 ```python
 from tinytauk import TinyTAuK
 
-engine = TinyTAuK.from_config("profiles/cpu.toml")
+engine = TinyTAuK.from_pretrained()
 result = engine.generate(
     'Generate speech based on the following description: "A calm, natural technical narration". '
     'The content to speak is: "The service restarted successfully.".',
@@ -59,25 +61,17 @@ result = engine.generate(
 `result.audio` is a CPU `torch.Tensor`; `sample_rate`, `generated_seconds`, and
 per-stage timings are also returned.
 
-## CPU profile
+Use `TinyTAuK.from_config(...)` for explicit component/runtime configuration.
+`profiles/cpu.toml` contains the same low-memory CPU configuration used by
+`from_pretrained()`.
 
-`profiles/cpu.toml` is the current low-memory CPU profile:
-
-| Component | Runtime |
-| --- | --- |
-| Qwen text transformer | INT8 weight-only |
-| Qwen audio tower | FP32 |
-| Flux2 | dynamic INT8 core policy |
-| VAE | FP32 + Inductor |
-| PyTorch threads | 4 |
-
-Benchmark it with:
+## Benchmarks
 
 ```bash
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
 
-See `docs/CPU_BASELINE.md` for the measurements behind this profile and
+See `docs/CPU_BASELINE.md` for the measurements behind the CPU profile and
 `docs/QUALITY_BENCHMARK.md` for the speech-quality gate.
 
 ## Reference oracle
