@@ -32,9 +32,9 @@ class TinyTAuK:
         checkpoint_path = self._find_transformer_checkpoint(self.snapshot)
         self.load_stage_seconds["snapshot"] = time.perf_counter() - snapshot_started
 
-        # Materialize the compiled VAE graph before Qwen and Flux2 are resident.
-        # This trades startup time for a lower process high-water mark without
-        # changing inference numerics or the steady-state component set.
+        # Load the VAE before the larger components. A profile may additionally
+        # materialize one representative Inductor shape here to keep compilation
+        # scratch from overlapping with Qwen and Flux2 residency.
         component_started = time.perf_counter()
         self.vae = PyTorchVAE(
             config.model,
@@ -42,9 +42,9 @@ class TinyTAuK:
             model_snapshot=self.snapshot,
         )
         self.load_stage_seconds["vae"] = time.perf_counter() - component_started
-        if config.vae.compile:
+        if config.vae.compile and config.vae.compile_warmup_seconds > 0:
             component_started = time.perf_counter()
-            self.vae.prepare_compile(seconds=3.0)
+            self.vae.prepare_compile(seconds=config.vae.compile_warmup_seconds)
             self.load_stage_seconds["vae_prepare"] = time.perf_counter() - component_started
             gc.collect()
 
