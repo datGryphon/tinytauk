@@ -41,14 +41,14 @@ def _load_fusion_parameters(checkpoint_path: str | Path) -> tuple[torch.Tensor, 
 
 def _torchao_int8_weight_only_config() -> Any:
     try:
-        from torchao.quantization import Int8WeightOnlyConfig
+        torchao_quantization: Any = import_module("torchao.quantization")
         from transformers import TorchAoConfig
     except ImportError as exc:
         raise RuntimeError("INT8 weight-only conditioning requires torchao; run `uv sync`") from exc
 
     # Reference-audio conditioning depends on the audio tower, so it remains FP32.
     return TorchAoConfig(
-        quant_type=Int8WeightOnlyConfig(),
+        quant_type=torchao_quantization.Int8WeightOnlyConfig(),
         modules_to_not_convert=["audio_tower", "lm_head"],
     )
 
