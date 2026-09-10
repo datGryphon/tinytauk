@@ -24,14 +24,14 @@ retained for that path.
 
 ```bash
 nix develop
-uv sync --extra quant
+uv sync
 ./scripts/check
 ```
 
 ## CLI
 
 ```bash
-uv run --extra quant tinytauk generate \
+uv run tinytauk generate \
   --profile profiles/cpu.toml \
   --seconds 9 \
   --output output.wav \
