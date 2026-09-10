@@ -3,5 +3,5 @@ set -euo pipefail
 
 ruff check .
 ruff format --check .
-uv run --extra quant mypy src
-uv run --extra quant pytest
+uv run mypy src
+uv run pytest
