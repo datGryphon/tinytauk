@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync --extra quant first." >&2
+  exit 1
+fi
+
+OUT_DIR="${OUT_DIR:-benchmarks/results/bean-vae-compile}"
+SECONDS_LIST="${SECONDS_LIST:-3 10 20}"
+RUNS="${RUNS:-3}"
+COMPILE_MODE="${COMPILE_MODE:-default}"
+mkdir -p "$OUT_DIR"
+
+OUT_DIR="$OUT_DIR" \
+SECONDS_LIST="$SECONDS_LIST" \
+RUNS="$RUNS" \
+COMPILE_MODE="$COMPILE_MODE" \
+GIT_REV="$(git rev-parse HEAD)" \
+"$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch import nn
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import memory_sample, resolve_auk_snapshot
+from tinytauk.vae.pytorch import PyTorchVAE
+
+out_dir = Path(os.environ["OUT_DIR"])
+seconds_list = [float(value) for value in os.environ["SECONDS_LIST"].split()]
+runs = int(os.environ["RUNS"])
+compile_mode = os.environ["COMPILE_MODE"]
+git_rev = os.environ["GIT_REV"]
+
+if not seconds_list or any(value <= 0 for value in seconds_list):
+    raise SystemExit("SECONDS_LIST must contain positive durations")
+if runs < 1:
+    raise SystemExit("RUNS must be positive")
+
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = checkpoint_path.parent
+before = memory_sample()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+latent_fps = vae.sample_rate / vae.downsample_rate
+
+
+def make_latents(seconds: float, seed: int) -> torch.Tensor:
+    frames = max(1, math.ceil(seconds * latent_fps))
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    return torch.randn((1, frames, vae.latent_dim), generator=generator, dtype=torch.float32)
+
+
+def error_metrics(reference: torch.Tensor, candidate: torch.Tensor) -> dict[str, float]:
+    delta = candidate - reference
+    signal = reference.float().square().mean()
+    noise = delta.float().square().mean()
+    snr = float("inf") if noise == 0 else float(10.0 * torch.log10(signal / noise))
+    return {
+        "max_abs_error": float(delta.abs().max()),
+        "mean_abs_error": float(delta.abs().mean()),
+        "snr_db": snr,
+    }
+
+
+latents_by_seconds = {
+    seconds: make_latents(seconds, 7300 + index)
+    for index, seconds in enumerate(seconds_list, start=1)
+}
+
+# Establish same-process eager baselines and retain one reference waveform per shape.
+eager: dict[str, Any] = {}
+references: dict[float, torch.Tensor] = {}
+for seconds in seconds_list:
+    latents = latents_by_seconds[seconds]
+    vae.decode(latents)  # eager warmup
+    timings: list[float] = []
+    reference: torch.Tensor | None = None
+    generated_seconds = 0.0
+    for _ in range(runs):
+        started = time.perf_counter()
+        audio = vae.decode(latents).detach().cpu()
+        elapsed = time.perf_counter() - started
+        timings.append(elapsed)
+        generated_seconds = audio.shape[-1] / vae.sample_rate
+        if reference is None:
+            reference = audio
+    if reference is None:
+        raise RuntimeError("No eager reference waveform produced")
+    references[seconds] = reference
+    eager[str(seconds)] = {
+        "generated_seconds": generated_seconds,
+        "runs": timings,
+        "median_seconds": statistics.median(timings),
+        "median_rtf": statistics.median(timings) / generated_seconds,
+    }
+    print(
+        f"eager {seconds:g}s: median={statistics.median(timings):.3f}s "
+        f"rtf={eager[str(seconds)]['median_rtf']:.3f}"
+    )
+
+
+class DecodeGraph(nn.Module):
+    def __init__(self, decoder: nn.Module) -> None:
+        super().__init__()
+        self.decoder = decoder
+
+    def forward(self, latents: torch.Tensor) -> torch.Tensor:
+        value = latents.float()
+        # Keep TinyTAuK's existing VAE semantics inside the compiled graph.
+        value = self.decoder.denormalize(value)  # type: ignore[attr-defined]
+        value = value.permute(0, 2, 1)
+        return self.decoder(value)
+
+
+graph = DecodeGraph(vae.decoder).eval()
+compile_kwargs: dict[str, Any] = {
+    "backend": "inductor",
+    "dynamic": True,
+}
+if compile_mode != "default":
+    compile_kwargs["mode"] = compile_mode
+
+compile_started = time.perf_counter()
+compiled = torch.compile(graph, **compile_kwargs)
+compile_wrapper_seconds = time.perf_counter() - compile_started
+
+compiled_results: dict[str, Any] = {}
+for seconds in seconds_list:
+    latents = latents_by_seconds[seconds]
+
+    first_started = time.perf_counter()
+    first_audio = compiled(latents).detach().cpu()
+    first_seconds = time.perf_counter() - first_started
+    first_quality = error_metrics(references[seconds], first_audio)
+
+    timings: list[float] = []
+    generated_seconds = first_audio.shape[-1] / vae.sample_rate
+    quality: dict[str, float] | None = None
+    for _ in range(runs):
+        started = time.perf_counter()
+        audio = compiled(latents).detach().cpu()
+        elapsed = time.perf_counter() - started
+        timings.append(elapsed)
+        quality = error_metrics(references[seconds], audio)
+
+    if quality is None:
+        raise RuntimeError("No compiled output produced")
+    eager_median = eager[str(seconds)]["median_seconds"]
+    compiled_median = statistics.median(timings)
+    compiled_results[str(seconds)] = {
+        "generated_seconds": generated_seconds,
+        "first_call_seconds": first_seconds,
+        "first_call_quality": first_quality,
+        "runs": timings,
+        "median_seconds": compiled_median,
+        "median_rtf": compiled_median / generated_seconds,
+        "speedup_vs_eager": eager_median / compiled_median,
+        "quality": quality,
+    }
+    print(
+        f"compile {seconds:g}s: first={first_seconds:.3f}s "
+        f"median={compiled_median:.3f}s "
+        f"rtf={compiled_median / generated_seconds:.3f} "
+        f"speedup={eager_median / compiled_median:.3f}x "
+        f"maxerr={quality['max_abs_error']:.3e}"
+    )
+
+after = memory_sample()
+result = {
+    "git_rev": git_rev,
+    "torch_version": torch.__version__,
+    "torch_num_threads": torch.get_num_threads(),
+    "torch_num_interop_threads": torch.get_num_interop_threads(),
+    "compile_mode": compile_mode,
+    "compile_wrapper_seconds": compile_wrapper_seconds,
+    "dynamic": True,
+    "runs": runs,
+    "eager": eager,
+    "compiled": compiled_results,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_mb": after.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after.peak_rss_mb),
+}
+output_path = out_dir / "compile.json"
+output_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+print("\n================ VAE COMPILE SUMMARY ================")
+print(json.dumps(result, indent=2, sort_keys=True))
+print(f"\nWrote {output_path}")
+PY
