@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync --extra quant first." >&2
+  exit 1
+fi
+
+PROFILE="${PROFILE:-profiles/bean-candidate.toml}"
+GEN_SECONDS="${GEN_SECONDS:-9}"
+WARM_RUNS="${WARM_RUNS:-1}"
+OUT_DIR="${OUT_DIR:-benchmarks/results/bean-candidate}"
+mkdir -p "$OUT_DIR"
+
+PROFILE="$PROFILE" \
+GEN_SECONDS="$GEN_SECONDS" \
+WARM_RUNS="$WARM_RUNS" \
+OUT_DIR="$OUT_DIR" \
+GIT_REV="$(git rev-parse HEAD)" \
+"$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import time
+import wave
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from tinytauk import TinyTAuK
+from tinytauk.reference import memory_sample
+
+profile = Path(os.environ["PROFILE"])
+gen_seconds = float(os.environ["GEN_SECONDS"])
+warm_runs = int(os.environ["WARM_RUNS"])
+out_dir = Path(os.environ["OUT_DIR"])
+git_rev = os.environ["GIT_REV"]
+
+if not profile.is_file():
+    raise SystemExit(f"Missing profile: {profile}")
+if not math.isfinite(gen_seconds) or gen_seconds <= 0:
+    raise SystemExit("GEN_SECONDS must be a positive finite number")
+if warm_runs < 1:
+    raise SystemExit("WARM_RUNS must be positive")
+
+spoken_text = (
+    "After the service restarted, the worker loaded the model, processed the request, "
+    "and returned clean audio without dropping a single word."
+)
+instruction = (
+    'Generate speech based on the following description: "A calm, natural technical narration". '
+    f'The content to speak is: "{spoken_text}".'
+)
+
+
+def write_pcm16(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
+    samples = audio.squeeze(0).detach().cpu().to(torch.float32).clamp(-1.0, 1.0)
+    pcm = (samples * 32767.0).round().to(torch.int16).contiguous().numpy().astype("<i2", copy=False)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm.tobytes())
+
+
+before = memory_sample()
+load_started = time.perf_counter()
+engine = TinyTAuK.from_config(profile)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+runs: list[dict[str, Any]] = []
+for run_index in range(warm_runs + 1):
+    started = time.perf_counter()
+    result = engine.generate(instruction, gen_seconds=gen_seconds, seed=1009)
+    observed_wall = time.perf_counter() - started
+    sample = memory_sample()
+    entry = {
+        "kind": "cold" if run_index == 0 else "warm",
+        "index": run_index,
+        "wall_seconds": observed_wall,
+        "engine_wall_seconds": result.wall_seconds,
+        "rtf": result.wall_seconds / result.generated_seconds,
+        "generated_seconds": result.generated_seconds,
+        "stage_seconds": result.stage_seconds,
+        "peak_rss_mb": sample.peak_rss_mb,
+        "rms": float(torch.sqrt(result.audio.float().square().mean())),
+        "peak_amplitude": float(result.audio.float().abs().max()),
+    }
+    runs.append(entry)
+    print(
+        f"{entry['kind']} run {run_index}: total={entry['engine_wall_seconds']:.3f}s "
+        f"rtf={entry['rtf']:.3f} stages={entry['stage_seconds']}"
+    )
+    if run_index == warm_runs:
+        write_pcm16(out_dir / "candidate.wav", result.audio, result.sample_rate)
+
+warm_entries = [entry for entry in runs if entry["kind"] == "warm"]
+warm_stage_medians = {
+    stage: statistics.median(float(entry["stage_seconds"][stage]) for entry in warm_entries)
+    for stage in ("conditioning", "generator", "vae")
+}
+warm_wall_median = statistics.median(float(entry["engine_wall_seconds"]) for entry in warm_entries)
+warm_generated_median = statistics.median(float(entry["generated_seconds"]) for entry in warm_entries)
+
+cold_vae = float(runs[0]["stage_seconds"]["vae"])
+warm_vae = warm_stage_medians["vae"]
+result_payload = {
+    "git_rev": git_rev,
+    "profile": str(profile),
+    "spoken_text": spoken_text,
+    "instruction": instruction,
+    "gen_seconds_requested": gen_seconds,
+    "torch_version": torch.__version__,
+    "torch_num_threads": torch.get_num_threads(),
+    "torch_num_interop_threads": torch.get_num_interop_threads(),
+    "generator_quantization": engine.config.generator.quantization,
+    "generator_quantized_engine": engine.generator.quantized_engine,
+    "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
+    "vae_compile": engine.config.vae.compile,
+    "vae_compile_mode": engine.config.vae.compile_mode,
+    "vae_compile_dynamic": engine.config.vae.compile_dynamic,
+    "load_seconds": load_seconds,
+    "load_stage_seconds": engine.load_stage_seconds,
+    "runs": runs,
+    "warm": {
+        "runs": len(warm_entries),
+        "median_wall_seconds": warm_wall_median,
+        "median_rtf": warm_wall_median / warm_generated_median,
+        "median_stage_seconds": warm_stage_medians,
+    },
+    "cold_vae_seconds": cold_vae,
+    "warm_vae_seconds": warm_vae,
+    "estimated_first_compile_overhead_seconds": max(0.0, cold_vae - warm_vae),
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_mb": max(float(entry["peak_rss_mb"]) for entry in runs),
+    "wav_path": str(out_dir / "candidate.wav"),
+}
+output_path = out_dir / "candidate.json"
+output_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True) + "\n")
+print("\n================ BEAN CANDIDATE SUMMARY ================")
+print(json.dumps(result_payload, indent=2, sort_keys=True))
+print(f"\nWrote {output_path}")
+print(f"Wrote {out_dir / 'candidate.wav'}")
+PY
