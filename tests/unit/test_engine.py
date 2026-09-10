@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from threading import Lock
+
 import torch
 
 from tinytauk import RuntimeConfig, TinyTAuK
@@ -36,9 +39,15 @@ class _VAE:
         return torch.zeros((1, 1, 48_000), dtype=torch.float32)
 
 
+class _ConfigOnlyTinyTAuK(TinyTAuK):
+    def __init__(self, config: RuntimeConfig) -> None:
+        self.config = config
+
+
 def _fake_engine() -> TinyTAuK:
     engine = object.__new__(TinyTAuK)
     engine.config = RuntimeConfig.from_dict({"runtime": {"seed": 42}})
+    engine._generate_lock = Lock()
     engine.conditioner = _Conditioner()  # type: ignore[assignment]
     engine.generator = _Generator()  # type: ignore[assignment]
     engine.vae = _VAE()  # type: ignore[assignment]
@@ -60,7 +69,8 @@ def test_generate_rejects_invalid_requests_before_execution() -> None:
 
     for instruction, gen_seconds, match in (
         ("   ", 2.0, "instruction must not be empty"),
-        ("Test", 0.0, "gen_seconds must be greater than zero"),
+        ("Test", 0.0, "gen_seconds must be a positive finite number"),
+        ("Test", float("nan"), "gen_seconds must be a positive finite number"),
     ):
         try:
             engine.generate(instruction, gen_seconds=gen_seconds)
@@ -68,3 +78,20 @@ def test_generate_rejects_invalid_requests_before_execution() -> None:
             assert match in str(exc)
         else:
             raise AssertionError(f"expected ValueError matching {match!r}")
+
+
+def test_generate_rejects_reference_audio_before_execution() -> None:
+    engine = _fake_engine()
+
+    try:
+        engine.generate("Test", reference_audio="voice.wav", gen_seconds=2.0)
+    except NotImplementedError as exc:
+        assert "reference-audio generation is not implemented" in str(exc)
+    else:
+        raise AssertionError("expected reference audio to fail before execution")
+
+
+def test_from_pretrained_matches_release_cpu_profile() -> None:
+    engine = _ConfigOnlyTinyTAuK.from_pretrained()
+
+    assert engine.config == RuntimeConfig.from_toml(Path("profiles/cpu.toml"))
