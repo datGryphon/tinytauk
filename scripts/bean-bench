@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export PROFILE="${PROFILE:-profiles/bean.toml}"
-export OUT_DIR="${OUT_DIR:-benchmarks/results/bean}"
-exec bash "$ROOT/scripts/bean-candidate"
