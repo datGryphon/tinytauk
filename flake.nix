@@ -24,7 +24,6 @@
               zlib
               pkg-config
               git
-              git-lfs
               gcc
             ];
 
