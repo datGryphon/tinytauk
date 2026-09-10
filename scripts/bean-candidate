@@ -116,6 +116,7 @@ for run_index in range(warm_runs + 1):
         "rtf": result.wall_seconds / result.generated_seconds,
         "generated_seconds": result.generated_seconds,
         "stage_seconds": result.stage_seconds,
+        "current_rss_mb": sample.current_rss_mb,
         "peak_rss_mb": sample.peak_rss_mb,
         "rms": float(torch.sqrt(result.audio.float().square().mean())),
         "peak_amplitude": float(result.audio.float().abs().max()),
@@ -124,7 +125,8 @@ for run_index in range(warm_runs + 1):
     print(
         f"{entry['kind']} run {run_index} prompt={prompt_index}: "
         f"total={entry['engine_wall_seconds']:.3f}s "
-        f"rtf={entry['rtf']:.3f} stages={entry['stage_seconds']}"
+        f"rtf={entry['rtf']:.3f} rss={entry['current_rss_mb']:.1f}MB "
+        f"stages={entry['stage_seconds']}"
     )
     if run_index == warm_runs:
         write_pcm16(out_dir / "candidate.wav", result.audio, result.sample_rate)
@@ -136,6 +138,7 @@ warm_stage_medians = {
 }
 warm_wall_median = statistics.median(float(entry["engine_wall_seconds"]) for entry in warm_entries)
 warm_generated_median = statistics.median(float(entry["generated_seconds"]) for entry in warm_entries)
+warm_rss_median = statistics.median(float(entry["current_rss_mb"]) for entry in warm_entries)
 
 cold_vae = float(runs[0]["stage_seconds"]["vae"])
 warm_vae = warm_stage_medians["vae"]
@@ -162,6 +165,7 @@ result_payload = {
         "median_wall_seconds": warm_wall_median,
         "median_rtf": warm_wall_median / warm_generated_median,
         "median_stage_seconds": warm_stage_medians,
+        "median_current_rss_mb": warm_rss_median,
     },
     "cold_vae_seconds": cold_vae,
     "warm_vae_seconds": warm_vae,
