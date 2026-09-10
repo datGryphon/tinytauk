@@ -69,9 +69,7 @@ class TransformersConditioner:
         upstream_parity: bool = False,
     ) -> None:
         if config.quantization not in {"none", "int8-weight-only"}:
-            raise ValueError(
-                "TransformersConditioner supports only none or int8-weight-only quantization"
-            )
+            raise ValueError("TransformersConditioner supports only none or int8-weight-only quantization")
         if upstream_parity and config.quantization != "none":
             raise ValueError("upstream parity requires an unquantized conditioner")
 
@@ -83,9 +81,7 @@ class TransformersConditioner:
 
         load_dtype = torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
         quantization_config = (
-            _torchao_int8_weight_only_config()
-            if config.quantization == "int8-weight-only"
-            else None
+            _torchao_int8_weight_only_config() if config.quantization == "int8-weight-only" else None
         )
         thinker: Any = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
             model.qwen_model_id,

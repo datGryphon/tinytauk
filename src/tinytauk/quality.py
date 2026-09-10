@@ -18,9 +18,7 @@ def normalize_text(text: str) -> str:
     """Normalize transcript text for speech-intelligibility scoring."""
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
-    cleaned = "".join(
-        char if char.isalnum() or char.isspace() else " " for char in normalized
-    )
+    cleaned = "".join(char if char.isalnum() or char.isspace() else " " for char in normalized)
     return " ".join(cleaned.split())
 
 

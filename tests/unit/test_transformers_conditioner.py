@@ -21,9 +21,7 @@ def test_find_tensor_key_accepts_unique_suffix() -> None:
 def test_messages_adds_no_prompt_audio_marker() -> None:
     request = GenerationRequest(instruction="hello")
     messages = TransformersConditioner._messages(request)
-    assert messages[0]["content"] == [
-        {"type": "text", "text": "hello|<no_prompt_audio>|"}
-    ]
+    assert messages[0]["content"] == [{"type": "text", "text": "hello|<no_prompt_audio>|"}]
 
 
 def test_messages_appends_reference_audio() -> None:

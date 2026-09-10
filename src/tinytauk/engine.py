@@ -75,9 +75,7 @@ class TinyTAuK:
         if preferred.is_file():
             return preferred
 
-        candidates = [
-            path for path in snapshot.glob("*.safetensors") if "vae" not in path.name.lower()
-        ]
+        candidates = [path for path in snapshot.glob("*.safetensors") if "vae" not in path.name.lower()]
         if not candidates:
             raise FileNotFoundError(f"No AuK transformer checkpoint found in {snapshot}")
         return max(candidates, key=lambda path: path.stat().st_size)

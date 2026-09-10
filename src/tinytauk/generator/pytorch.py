@@ -60,9 +60,7 @@ class PyTorchAuKGenerator:
             raise FileNotFoundError(config_path)
         if not checkpoint_path.is_file():
             candidates = [
-                path
-                for path in self.snapshot.glob("*.safetensors")
-                if "vae" not in path.name.lower()
+                path for path in self.snapshot.glob("*.safetensors") if "vae" not in path.name.lower()
             ]
             if not candidates:
                 raise FileNotFoundError("No AuK transformer checkpoint found")
@@ -101,17 +99,14 @@ class PyTorchAuKGenerator:
         checkpoint = load_file(str(checkpoint_path), device="cpu")
         prefix = "transformer."
         state = {
-            key.removeprefix(prefix): value
-            for key, value in checkpoint.items()
-            if key.startswith(prefix)
+            key.removeprefix(prefix): value for key, value in checkpoint.items() if key.startswith(prefix)
         }
         if not state:
             raise RuntimeError("AuK checkpoint contains no transformer.* tensors")
         missing, unexpected = self.transformer.load_state_dict(state, strict=False)
         if missing or unexpected:
             raise RuntimeError(
-                "Flux2Edit checkpoint mismatch: "
-                f"missing={missing[:10]} unexpected={unexpected[:10]}"
+                f"Flux2Edit checkpoint mismatch: missing={missing[:10]} unexpected={unexpected[:10]}"
             )
 
     @torch.inference_mode()
@@ -144,9 +139,7 @@ class PyTorchAuKGenerator:
         ).unsqueeze(0)
         text = conditioning.values.to(device=self.device, dtype=self.dtype)
         context_mask = (
-            conditioning.attention_mask.to(self.device)
-            if conditioning.attention_mask is not None
-            else None
+            conditioning.attention_mask.to(self.device) if conditioning.attention_mask is not None else None
         )
         empty_ref = torch.zeros(
             (1, 0, self.latent_dim),

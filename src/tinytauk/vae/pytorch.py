@@ -97,8 +97,7 @@ class PyTorchVAE:
         missing, unexpected = self.decoder.load_state_dict(state, strict=False)
         if missing or unexpected:
             raise RuntimeError(
-                "BigVGAN decoder checkpoint mismatch: "
-                f"missing={missing[:10]} unexpected={unexpected[:10]}"
+                f"BigVGAN decoder checkpoint mismatch: missing={missing[:10]} unexpected={unexpected[:10]}"
             )
 
     @torch.inference_mode()
@@ -108,9 +107,7 @@ class PyTorchVAE:
         if latents.ndim != 3:
             raise ValueError(f"latents must have shape [B, T, D], got {tuple(latents.shape)}")
         if latents.shape[-1] != self.latent_dim:
-            raise ValueError(
-                f"latent feature dimension must be {self.latent_dim}, got {latents.shape[-1]}"
-            )
+            raise ValueError(f"latent feature dimension must be {self.latent_dim}, got {latents.shape[-1]}")
 
         value = latents.to(device=self.device, dtype=torch.float32)
         if self._decode_graph is not None:

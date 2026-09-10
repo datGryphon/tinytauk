@@ -137,9 +137,7 @@ class AttnProcessor:
         key = attn.k_norm(key)
         if rope is not None:
             freqs, xpos_scale = rope
-            q_scale, k_scale = (
-                (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
-            )
+            q_scale, k_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
             query = apply_rotary_pos_emb(query, freqs, q_scale)
             key = apply_rotary_pos_emb(key, freqs, k_scale)
 
@@ -195,16 +193,12 @@ class JointAttnProcessor:
 
         if rope is not None:
             freqs, xpos_scale = rope
-            q_scale, k_scale = (
-                (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
-            )
+            q_scale, k_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
             query = apply_rotary_pos_emb(query, freqs, q_scale)
             key = apply_rotary_pos_emb(key, freqs, k_scale)
         if c_rope is not None:
             freqs, xpos_scale = c_rope
-            q_scale, k_scale = (
-                (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
-            )
+            q_scale, k_scale = (xpos_scale, xpos_scale**-1.0) if xpos_scale is not None else (1.0, 1.0)
             c_query = apply_rotary_pos_emb(c_query, freqs, q_scale)
             c_key = apply_rotary_pos_emb(c_key, freqs, k_scale)
 
