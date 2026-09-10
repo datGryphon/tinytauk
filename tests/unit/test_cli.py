@@ -8,10 +8,10 @@ import torch
 from tinytauk.cli import _write_pcm16, build_parser
 
 
-def test_generate_parser_uses_bean_profile() -> None:
+def test_generate_parser_uses_cpu_profile() -> None:
     args = build_parser().parse_args(["generate", "Test instruction"])
 
-    assert args.profile == Path("profiles/bean.toml")
+    assert args.profile == Path("profiles/cpu.toml")
     assert args.output == Path("output.wav")
     assert args.seconds == 10.0
     assert args.reference_audio is None
