@@ -1,7 +1,7 @@
 # CPU qualification
 
 TinyTAuK was checked against a pinned upstream AuK-Flash implementation, then
-profiled on Bean (Ryzen 5 Pro 2400G, 32 GB RAM).
+profiled on a Ryzen 5 Pro 2400G system with 32 GB RAM.
 
 ## FP32 parity
 
@@ -13,10 +13,10 @@ profiled on Bean (Ryzen 5 Pro 2400G, 32 GB RAM).
 
 See `REFERENCE_ORACLE.md` and `scripts/cpu-*-parity`.
 
-## Bean baseline
+## FP32 baseline
 
 The original all-FP32 stack was about `9.4x` realtime for a 10-second target.
-Four PyTorch threads performed best.
+Four PyTorch threads performed best on the test system.
 
 ## Flux2 INT8
 
@@ -60,11 +60,12 @@ tower remains FP32 for future reference-audio support.
 | FP32 | ~4.57 | ~17.7 GiB | ~22.1 GiB |
 | INT8 weight-only | ~5.32 | ~10.7 GiB | ~15.9 GiB |
 
-The memory saving was worth the modest conditioning slowdown on Bean.
+The memory saving was worth the modest conditioning slowdown on the test
+system.
 
 ## Release profile
 
-`profiles/bean.toml`:
+`profiles/cpu.toml`:
 
 ```text
 Qwen text transformer   INT8 weight-only
@@ -77,7 +78,7 @@ PyTorch threads          4
 Run:
 
 ```bash
-OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/bean-bench
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
 
 Results under `benchmarks/results/` are ignored by Git.
