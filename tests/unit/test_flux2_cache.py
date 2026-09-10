@@ -9,8 +9,8 @@ from tinytauk.types import Conditioning, GenerationRequest
 
 def _tiny_flux2() -> Flux2Edit:
     return Flux2Edit(
-        dim=8,
-        heads=1,
+        dim=16,
+        heads=2,
         dim_head=8,
         dropout=0.0,
         ff_mult=1.0,
