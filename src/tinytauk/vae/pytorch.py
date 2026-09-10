@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, cast
 
@@ -100,6 +101,24 @@ class PyTorchVAE:
                 "BigVGAN decoder checkpoint mismatch: "
                 f"missing={missing[:10]} unexpected={unexpected[:10]}"
             )
+
+    @torch.inference_mode()
+    def prepare_compile(self, *, seconds: float = 3.0) -> None:
+        """Materialize the dynamic Inductor graph before larger models are resident."""
+        if self._decode_graph is None:
+            return
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("seconds must be a positive finite number")
+
+        latent_fps = self.sample_rate / self.downsample_rate
+        frames = max(1, math.ceil(seconds * latent_fps))
+        latents = torch.zeros(
+            (1, frames, self.latent_dim),
+            device=self.device,
+            dtype=torch.float32,
+        )
+        decoded = self.decode(latents)
+        del decoded, latents
 
     @torch.inference_mode()
     def decode(self, latents: Any) -> torch.Tensor:
