@@ -37,3 +37,21 @@ def test_cpu_profile_uses_memory_optimized_conditioner() -> None:
     assert config.conditioner.quantization == "int8-weight-only"
     assert config.generator.quantization == "int8"
     assert config.vae.compile is True
+
+
+def test_unknown_configuration_keys_are_rejected() -> None:
+    try:
+        RuntimeConfig.from_dict({"generator": {"quantizaton": "int8"}})
+    except ValueError as exc:
+        assert "quantizaton" in str(exc)
+    else:
+        raise AssertionError("expected unknown configuration key to fail")
+
+
+def test_negative_thread_count_is_rejected() -> None:
+    try:
+        RuntimeConfig.from_dict({"runtime": {"num_threads": -1}})
+    except ValueError as exc:
+        assert "num_threads must be non-negative" in str(exc)
+    else:
+        raise AssertionError("expected negative thread count to fail")
