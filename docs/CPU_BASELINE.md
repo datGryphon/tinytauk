@@ -1,51 +1,43 @@
-# CPU runtime qualification
+# CPU qualification
 
-TinyTAuK was implemented against a pinned upstream AuK-Flash reference and then optimized component-by-component for a shared-memory CPU deployment.
+TinyTAuK was checked against a pinned upstream AuK-Flash implementation, then
+profiled on Bean (Ryzen 5 Pro 2400G, 32 GB RAM).
 
 ## FP32 parity
 
-The standalone FP32 paths reproduce the upstream reference behavior without importing the upstream `auk` package at runtime.
-
-| Component | Reference result |
+| Component | Result |
 | --- | --- |
-| Qwen conditioning + AuK layer fusion | exact tensor equality, shape `[1, 43, 2048]` |
-| Flux2Edit four-step sampler | exact sampled-latent equality in FP32 |
-| BigVGAN decode | reference waveform within one PCM16 LSB |
+| Qwen + AuK layer fusion | exact tensor equality |
+| Flux2 four-step sampler | exact sampled-latent equality |
+| BigVGAN decode | within one PCM16 LSB |
 
-The reference tools are retained under `scripts/cpu-*-parity` and documented in [`REFERENCE_ORACLE.md`](REFERENCE_ORACLE.md).
+See `REFERENCE_ORACLE.md` and `scripts/cpu-*-parity`.
 
-## Bean FP32 baseline
+## Bean baseline
 
-The initial all-FP32 Bean run established an end-to-end baseline around `9.4x` realtime for a 10-second target. Component timing showed that all three major stages were material:
+The original all-FP32 stack was about `9.4x` realtime for a 10-second target.
+Four PyTorch threads performed best.
 
-- Qwen conditioning: roughly 36–45 seconds;
-- Flux2 generation: roughly 34 seconds;
-- VAE decode: roughly 19–24 seconds after weight-normalization removal.
+## Flux2 INT8
 
-Four PyTorch intra-op threads performed best on the target Ryzen 5 Pro 2400G.
+The supported `quantization = "int8"` policy quantizes large non-sensitive
+Linear layers and keeps timing/text/audio projections, normalization paths, and
+the final projection in FP32.
 
-## Flux2 dynamic INT8
+| Policy | WER | Generator speedup | RMS vs FP32 |
+| --- | ---: | ---: | ---: |
+| FP32 | 48% | 1.00x | 100% |
+| attention | 51% | 1.08x | 79% |
+| **core** | **41%** | **1.52x** | **50%** |
+| all | 57% | 1.61x | 19% |
 
-Dynamic INT8 was evaluated with progressively broader Linear-layer policies. The selected policy quantizes large non-sensitive transformer Linear layers while retaining timing/text/audio projections, normalization paths, and the final projection in FP32.
+`int8-all` was rejected because it added audible scratch/static for little
+extra speed. WER is only one quality signal; listening and acoustic regression
+checks are also required.
 
-Representative quality result:
+## VAE compile
 
-| Policy | WER | Generator speedup | Hot-path speedup | RMS vs FP32 |
-| --- | ---: | ---: | ---: | ---: |
-| FP32 | 48% | 1.00x | 1.00x | 100% |
-| attention | 51% | 1.08x | 1.04x | 79% |
-| **core** | **41%** | **1.52x** | **1.29x** | **50%** |
-| all Linear layers | 57% | 1.61x | 1.33x | 19% |
-
-The all-Linears policy produced audible scratch/static and excessive high-frequency energy for only a small incremental speed gain. The core policy is therefore the supported `quantization = "int8"` generator behavior.
-
-WER is not treated as a standalone perceptual metric: quantization can change ASR behavior without improving speech quality. Acceptance uses intelligibility, listening, acoustic regression metrics, and performance together.
-
-## VAE Inductor compile
-
-The VAE is kept in FP32. Removing weight normalization and compiling the decoder with TorchInductor materially reduced warm decode time while remaining numerically close to eager output.
-
-Isolated Bean results:
+The VAE stays FP32 and uses TorchInductor.
 
 | Target | Eager RTF | Compiled RTF | Speedup |
 | --- | ---: | ---: | ---: |
@@ -53,41 +45,39 @@ Isolated Bean results:
 | 10 s | 2.593 | 1.870 | 1.39x |
 | 20 s | 2.974 | 2.202 | 1.35x |
 
-Compiled/eager waveform SNR was approximately 100 dB in these tests.
-
-Inductor compilation is lazy and can make the first request for a graph much slower. Attempts to precompile the VAE in isolation during engine construction were rejected: a nominally matching 9-second dummy decode still triggered another roughly 109-second VAE compile on the first real request, while retained and peak RSS increased. Service-level warmup should exercise the complete `TinyTAuK.generate()` path instead.
+Compiled/eager waveform SNR was about 100 dB. Inductor compiles lazily; warm
+the full `TinyTAuK.generate()` path in a long-running service. Isolated VAE
+precompile was tested and rejected because the real request still recompiled
+and peak RSS increased.
 
 ## Qwen INT8 weight-only
 
-The largest persistent-memory improvement came from weight-only INT8 on the Qwen text transformer. The audio tower remains FP32 so future reference-audio conditioning is not designed out of the runtime.
+Qwen text-transformer weights use INT8 weight-only quantization. The audio
+tower remains FP32 for future reference-audio support.
 
-A representative Bean comparison before the isolated-precompile experiment was removed:
-
-| Conditioner | Warm RTF | Warm process RSS | Peak process RSS |
+| Conditioner | Warm RTF | Warm RSS | Peak RSS |
 | --- | ---: | ---: | ---: |
 | FP32 | ~4.57 | ~17.7 GiB | ~22.1 GiB |
 | INT8 weight-only | ~5.32 | ~10.7 GiB | ~15.9 GiB |
 
-The memory saving is large enough to justify the modest conditioning-latency increase on a shared host. Speech from the weight-only candidate did not show the scratch/static failure mode seen with over-quantized Flux2. Content-level AuK prompt leakage/repetition remains possible and should be handled by the calling application's transcript validation and retry policy.
+The memory saving was worth the modest conditioning slowdown on Bean.
 
-## Supported Bean profile
+## Release profile
 
-`profiles/bean.toml` contains the selected release configuration:
+`profiles/bean.toml`:
 
 ```text
 Qwen text transformer   INT8 weight-only
 Qwen audio tower        FP32
-Flux2                    dynamic INT8 core policy
+Flux2                    dynamic INT8 core
 VAE                      FP32 + Inductor
 PyTorch threads          4
 ```
 
-Run the release profile with:
+Run:
 
 ```bash
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/bean-bench
 ```
 
-The benchmark records first-request and warm stage timings, current RSS after each request, the process high-water mark, waveform statistics, and the exact Git revision.
-
-Generated benchmark results are intentionally ignored by Git so qualification can be repeated on different machines without committing machine-specific artifacts.
+Results under `benchmarks/results/` are ignored by Git.
