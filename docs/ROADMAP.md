@@ -2,12 +2,13 @@
 
 ## Current
 
-TinyTAuK supports AuK-Flash text/instruction TTS with the CPU profile in
-`profiles/cpu.toml`.
+TinyTAuK supports AuK-Flash text/instruction TTS with the built-in CPU runtime.
+`profiles/cpu.toml` exposes the same configuration explicitly.
 
 The public API is:
 
 ```python
+TinyTAuK.from_pretrained(...)
 TinyTAuK.from_config(...)
 TinyTAuK.generate(...)
 ```
@@ -15,8 +16,8 @@ TinyTAuK.generate(...)
 ## Next
 
 1. Add TinyTAuK as a TinyTalk backend.
-2. Add reference-audio generation. The Qwen audio tower is already retained;
-   the Flux2 reference path is not implemented yet.
+2. Add reference-audio generation. The Qwen audio tower is retained; the Flux2
+   reference path is not implemented yet.
 3. Keep the existing WER/CER corpus as the regression gate.
 
 ## Later, if needed
@@ -27,4 +28,4 @@ TinyTAuK.generate(...)
 - Vulkan/ggml or GPU acceleration.
 
 TinyTAuK does not own HTTP serving, request queues, transcript retry policy,
-chunking, or audio stitching. Those stay in TinyTalk.
+chunking, or audio stitching. Those stay in the caller.
