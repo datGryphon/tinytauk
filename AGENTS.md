@@ -29,12 +29,14 @@ Keep this project simple and direct.
 
 ## Runtime
 
-`profiles/cpu.toml` is the current low-memory CPU profile. It uses Qwen INT8
-weight-only text-transformer weights, dynamic INT8 for selected Flux2 Linear
-layers, and an FP32 Inductor-compiled VAE.
+`TinyTAuK.from_pretrained()` and `profiles/cpu.toml` use the same low-memory CPU
+configuration: Qwen INT8 weight-only text weights, dynamic INT8 for selected
+Flux2 Linear layers, and an FP32 Inductor-compiled VAE.
 
 Text/instruction generation is supported. `reference_audio` is reserved by the
-public API, but Flux2 reference-audio generation is not implemented yet.
+public API, but Flux2 reference-audio generation is not implemented yet. One
+engine instance processes one generation at a time because Flux2 caches text
+projections during its four sampling steps.
 
 ## Commands
 
