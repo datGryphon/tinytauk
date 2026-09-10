@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
-  echo "Missing .venv; run uv sync --extra quant first." >&2
+  echo "Missing .venv; run uv sync first." >&2
   exit 1
 fi
 
@@ -145,7 +145,7 @@ print(json.dumps(report, indent=2, sort_keys=True))
 PY
 }
 
-# Fresh process per case so model residency and ru_maxrss do not contaminate the next result.
+# Use a fresh process per case so model residency and peak RSS do not carry over.
 run_case bf16-bf16 bf16 bf16
 run_case bf16-fp32 bf16 fp32
 run_case fp32-bf16 fp32 bf16
