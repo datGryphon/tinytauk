@@ -7,10 +7,23 @@ import torch
 from huggingface_hub import snapshot_download
 from omegaconf import OmegaConf
 from safetensors.torch import load_file
+from torch import nn
 
 from tinytauk.config import ComponentConfig, ModelConfig
 
 from .bigvgan import BigVGANDecoder, BigVGANDecoderConfig
+
+
+class _DecodeGraph(nn.Module):
+    def __init__(self, decoder: BigVGANDecoder) -> None:
+        super().__init__()
+        self.decoder = decoder
+
+    def forward(self, latents: torch.Tensor) -> torch.Tensor:
+        value = latents.float()
+        value = self.decoder.denormalize(value)
+        value = value.permute(0, 2, 1)
+        return self.decoder(value)
 
 
 class PyTorchVAE:
@@ -65,6 +78,17 @@ class PyTorchVAE:
         self.decoder.remove_weight_norm()
         self.decoder = self.decoder.to(device=self.device, dtype=torch.float32).eval()
         self.decoder.requires_grad_(False)
+        self._decode_graph: nn.Module | None = None
+
+        if config.compile:
+            graph = _DecodeGraph(self.decoder).eval()
+            compile_kwargs: dict[str, Any] = {
+                "backend": "inductor",
+                "dynamic": config.compile_dynamic,
+            }
+            if config.compile_mode != "default":
+                compile_kwargs["mode"] = config.compile_mode
+            self._decode_graph = cast(nn.Module, torch.compile(graph, **compile_kwargs))
 
     def _load_decoder_weights(self, checkpoint_path: Path) -> None:
         checkpoint = load_file(str(checkpoint_path), device="cpu")
@@ -89,6 +113,10 @@ class PyTorchVAE:
             )
 
         value = latents.to(device=self.device, dtype=torch.float32)
+        if self._decode_graph is not None:
+            decoded = cast(torch.Tensor, self._decode_graph(value))
+            return decoded.to(torch.float32)
+
         value = self.decoder.denormalize(value)
         value = value.permute(0, 2, 1)
         decoded = cast(torch.Tensor, self.decoder(value))
