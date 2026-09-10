@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
+from threading import Lock
 
 import torch
 from huggingface_hub import snapshot_download
@@ -19,6 +21,7 @@ class TinyTAuK:
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
         self._validate_backends()
+        self._generate_lock = Lock()
 
         if config.runtime.num_threads > 0:
             torch.set_num_threads(config.runtime.num_threads)
@@ -93,11 +96,32 @@ class TinyTAuK:
         qwen_model_id: str = "Qwen/Qwen2.5-Omni-3B",
         device: str = "cpu",
     ) -> TinyTAuK:
+        if device != "cpu":
+            raise ValueError("from_pretrained currently supports only CPU; use from_config for custom runtimes")
         raw = {
             "model": {"model_id": model_id, "qwen_model_id": qwen_model_id},
-            "conditioner": {"device": device},
-            "generator": {"device": device},
-            "vae": {"device": device},
+            "conditioner": {
+                "backend": "transformers",
+                "device": "cpu",
+                "dtype": "fp32",
+                "quantization": "int8-weight-only",
+            },
+            "generator": {
+                "backend": "pytorch",
+                "device": "cpu",
+                "dtype": "fp32",
+                "quantization": "int8",
+            },
+            "vae": {
+                "backend": "pytorch",
+                "device": "cpu",
+                "dtype": "fp32",
+                "quantization": "none",
+                "compile": True,
+                "compile_mode": "default",
+                "compile_dynamic": True,
+            },
+            "runtime": {"seed": 1234, "num_threads": 4},
         }
         return cls(RuntimeConfig.from_dict(raw))
 
@@ -111,37 +135,39 @@ class TinyTAuK:
     ) -> GenerationResult:
         if not instruction.strip():
             raise ValueError("instruction must not be empty")
-        if gen_seconds <= 0:
-            raise ValueError("gen_seconds must be greater than zero")
+        if not math.isfinite(gen_seconds) or gen_seconds <= 0:
+            raise ValueError("gen_seconds must be a positive finite number")
+        if reference_audio is not None:
+            raise NotImplementedError("reference-audio generation is not implemented")
 
         request = GenerationRequest(
             instruction=instruction,
-            reference_audio=Path(reference_audio) if reference_audio else None,
             gen_seconds=gen_seconds,
             seed=self.config.runtime.seed if seed is None else seed,
         )
 
-        started = time.perf_counter()
-        stage_seconds: dict[str, float] = {}
+        with self._generate_lock:
+            started = time.perf_counter()
+            stage_seconds: dict[str, float] = {}
 
-        stage_started = time.perf_counter()
-        conditioning = self.conditioner.encode(request)
-        stage_seconds["conditioning"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            conditioning = self.conditioner.encode(request)
+            stage_seconds["conditioning"] = time.perf_counter() - stage_started
 
-        stage_started = time.perf_counter()
-        latents = self.generator.generate_latents(request, conditioning)
-        stage_seconds["generator"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            latents = self.generator.generate_latents(request, conditioning)
+            stage_seconds["generator"] = time.perf_counter() - stage_started
 
-        stage_started = time.perf_counter()
-        decoded = self.vae.decode(latents)
-        stage_seconds["vae"] = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            decoded = self.vae.decode(latents)
+            stage_seconds["vae"] = time.perf_counter() - stage_started
 
-        audio = decoded.squeeze(0).detach().cpu().to(torch.float32)
-        generated_seconds = float(audio.shape[-1]) / float(self.vae.sample_rate)
-        return GenerationResult(
-            audio=audio,
-            sample_rate=self.vae.sample_rate,
-            generated_seconds=generated_seconds,
-            wall_seconds=time.perf_counter() - started,
-            stage_seconds=stage_seconds,
-        )
+            audio = decoded.squeeze(0).detach().cpu().to(torch.float32)
+            generated_seconds = float(audio.shape[-1]) / float(self.vae.sample_rate)
+            return GenerationResult(
+                audio=audio,
+                sample_rate=self.vae.sample_rate,
+                generated_seconds=generated_seconds,
+                wall_seconds=time.perf_counter() - started,
+                stage_seconds=stage_seconds,
+            )
