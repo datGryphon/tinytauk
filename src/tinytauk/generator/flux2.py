@@ -1,7 +1,7 @@
 """AuK Flux2Edit backbone for standalone TinyTAuK inference.
 
-Adapted from Tencent-Hunyuan/AuK under the MIT license. The CPU baseline keeps
-only the execution path needed by AuK-Flash inference.
+Adapted from Tencent-Hunyuan/AuK under the MIT license. This module contains
+only the execution path required by AuK-Flash inference.
 """
 # mypy: ignore-errors
 
@@ -65,9 +65,9 @@ class Flux2Edit(nn.Module):
     ) -> None:
         super().__init__()
         if attn_backend != "torch":
-            raise ValueError("TinyTAuK CPU baseline supports only torch attention")
+            raise ValueError("TinyTAuK supports only torch attention")
         if checkpoint_activations:
-            raise ValueError("TinyTAuK CPU inference does not use activation checkpointing")
+            raise ValueError("TinyTAuK inference does not use activation checkpointing")
 
         self.dim = dim
         self.depth = depth
