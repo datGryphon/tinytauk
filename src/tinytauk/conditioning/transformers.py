@@ -48,9 +48,7 @@ def _torchao_int8_weight_only_config() -> Any:
             "INT8 weight-only conditioning requires the quant extra; run `uv sync --extra quant`"
         ) from exc
 
-    # Preserve the complete audio-conditioning path at FP32. The vision tower is
-    # unused by TinyTAuK and is deleted after loading, so allowing its Linear
-    # weights to quantize while loading also avoids an unnecessary FP32 peak.
+    # Reference-audio conditioning depends on the audio tower, so it remains FP32.
     return TorchAoConfig(
         quant_type=Int8WeightOnlyConfig(),
         modules_to_not_convert=["audio_tower", "lm_head"],
@@ -58,11 +56,10 @@ def _torchao_int8_weight_only_config() -> Any:
 
 
 class TransformersConditioner:
-    """Standalone Qwen2.5-Omni conditioner with AuK layer fusion.
+    """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion.
 
-    The production path keeps Qwen at the configured dtype. ``upstream_parity``
-    reproduces AuK's current load behavior (BF16 load followed by FP32 promotion)
-    so captured oracle tensors can be compared directly.
+    ``upstream_parity`` reproduces AuK's BF16-load-then-FP32-promotion behavior
+    for exact reference comparisons.
     """
 
     def __init__(
@@ -84,11 +81,8 @@ class TransformersConditioner:
         self.config = config
         self.device = torch.device(config.device)
         if config.quantization == "int8-weight-only" and self.device.type != "cpu":
-            raise ValueError("INT8 weight-only conditioner candidate currently targets CPU only")
+            raise ValueError("INT8 weight-only conditioning requires CPU")
 
-        # Upstream AuK first loads the Thinker in BF16, then recursively promotes
-        # the complete CFMEdit model to FP32. Preserve that sequence only for
-        # exact oracle parity; the normal TinyTAuK path avoids the promotion.
         load_dtype = torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
         quantization_config = (
             _torchao_int8_weight_only_config()
