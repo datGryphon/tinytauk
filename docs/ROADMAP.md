@@ -3,7 +3,7 @@
 ## Current
 
 TinyTAuK supports AuK-Flash text/instruction TTS with the CPU profile in
-`profiles/bean.toml`.
+`profiles/cpu.toml`.
 
 The public API is:
 
