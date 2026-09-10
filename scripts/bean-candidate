@@ -105,7 +105,7 @@ for run_index in range(warm_runs + 1):
     observed_wall = time.perf_counter() - started
     sample = memory_sample()
     entry = {
-        "kind": "cold" if run_index == 0 else "warm",
+        "kind": "first" if run_index == 0 else "warm",
         "index": run_index,
         "prompt_index": prompt_index,
         "spoken_text": spoken_text,
@@ -140,8 +140,6 @@ warm_wall_median = statistics.median(float(entry["engine_wall_seconds"]) for ent
 warm_generated_median = statistics.median(float(entry["generated_seconds"]) for entry in warm_entries)
 warm_rss_median = statistics.median(float(entry["current_rss_mb"]) for entry in warm_entries)
 
-cold_vae = float(runs[0]["stage_seconds"]["vae"])
-warm_vae = warm_stage_medians["vae"]
 result_payload = {
     "git_rev": git_rev,
     "profile": str(profile),
@@ -150,12 +148,14 @@ result_payload = {
     "torch_version": torch.__version__,
     "torch_num_threads": torch.get_num_threads(),
     "torch_num_interop_threads": torch.get_num_interop_threads(),
+    "conditioner_quantization": engine.config.conditioner.quantization,
     "generator_quantization": engine.config.generator.quantization,
     "generator_quantized_engine": engine.generator.quantized_engine,
     "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
     "vae_compile": engine.config.vae.compile,
     "vae_compile_mode": engine.config.vae.compile_mode,
     "vae_compile_dynamic": engine.config.vae.compile_dynamic,
+    "vae_prepare_seconds": float(engine.load_stage_seconds.get("vae_prepare", 0.0)),
     "load_seconds": load_seconds,
     "load_stage_seconds": engine.load_stage_seconds,
     "runs": runs,
@@ -167,12 +167,12 @@ result_payload = {
         "median_stage_seconds": warm_stage_medians,
         "median_current_rss_mb": warm_rss_median,
     },
-    "cold_vae_seconds": cold_vae,
-    "warm_vae_seconds": warm_vae,
-    "estimated_first_compile_overhead_seconds": max(0.0, cold_vae - warm_vae),
+    "first_request_vae_seconds": float(runs[0]["stage_seconds"]["vae"]),
+    "warm_vae_seconds": warm_stage_medians["vae"],
     "rss_before_mb": before.current_rss_mb,
     "rss_after_load_mb": after_load.current_rss_mb,
-    "peak_rss_mb": max(float(entry["peak_rss_mb"]) for entry in runs),
+    "peak_rss_after_load_mb": after_load.peak_rss_mb,
+    "peak_rss_mb": max(after_load.peak_rss_mb, *(float(entry["peak_rss_mb"]) for entry in runs)),
     "wav_path": str(out_dir / "candidate.wav"),
 }
 output_path = out_dir / "candidate.json"
