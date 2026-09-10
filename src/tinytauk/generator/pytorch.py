@@ -10,6 +10,11 @@ from omegaconf import OmegaConf
 from safetensors.torch import load_file
 
 from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.quant.dynamic import (
+    apply_dynamic_int8_linears,
+    configure_x86_quantized_engine,
+    select_dynamic_int8_linears,
+)
 from tinytauk.types import Conditioning, GenerationRequest
 
 from .flux2 import Flux2Edit
@@ -37,14 +42,18 @@ class PyTorchAuKGenerator:
         *,
         model_snapshot: str | Path | None = None,
     ) -> None:
-        if config.quantization != "none":
-            raise ValueError("CPU generator baseline does not quantize yet")
+        if config.quantization not in {"none", "int8"}:
+            raise ValueError("PyTorch AuK generator currently supports only none or int8 quantization")
+        if config.compile:
+            raise ValueError("PyTorch AuK generator compilation is not qualified yet")
 
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
         self.dtype = _DTYPE_MAP[config.dtype]
         self.snapshot = Path(model_snapshot or snapshot_download(repo_id=model.model_id))
+        self.quantized_linear_names: tuple[str, ...] = ()
+        self.quantized_engine: str | None = None
 
         config_path = self.snapshot / "config.yaml"
         checkpoint_path = self.snapshot / "auk_flash.safetensors"
@@ -77,6 +86,17 @@ class PyTorchAuKGenerator:
         self._load_transformer_weights(checkpoint_path)
         self.transformer = self.transformer.to(device=self.device, dtype=self.dtype).eval()
         self.transformer.requires_grad_(False)
+
+        if config.quantization == "int8":
+            if self.device.type != "cpu" or self.dtype != torch.float32:
+                raise ValueError("dynamic INT8 generator currently requires CPU FP32 input weights")
+            self.quantized_linear_names = select_dynamic_int8_linears(
+                self.transformer,
+                min_weight_elements=1_000_000,
+                include_sensitive=False,
+            )
+            self.quantized_engine = configure_x86_quantized_engine()
+            apply_dynamic_int8_linears(self.transformer, self.quantized_linear_names)
 
     def _load_transformer_weights(self, checkpoint_path: Path) -> None:
         checkpoint = load_file(str(checkpoint_path), device="cpu")
