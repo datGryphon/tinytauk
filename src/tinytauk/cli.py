@@ -96,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = sub.add_parser("generate", help="Generate speech with AuK-Flash")
     generate.add_argument("instruction")
-    generate.add_argument("--profile", type=Path, default=Path("profiles/bean.toml"))
+    generate.add_argument("--profile", type=Path, default=Path("profiles/cpu.toml"))
     generate.add_argument("--output", type=Path, default=Path("output.wav"))
     generate.add_argument("--reference-audio", type=Path)
     generate.add_argument("--seconds", type=float, default=10.0)
