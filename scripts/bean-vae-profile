@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync --extra quant first." >&2
+  exit 1
+fi
+
+OUT_DIR="${OUT_DIR:-benchmarks/results/bean-vae-profile}"
+SECONDS_LIST="${SECONDS_LIST:-3 10 20}"
+PROFILE_SECONDS="${PROFILE_SECONDS:-10}"
+WARMUPS="${WARMUPS:-1}"
+RUNS="${RUNS:-3}"
+mkdir -p "$OUT_DIR"
+
+OUT_DIR="$OUT_DIR" \
+SECONDS_LIST="$SECONDS_LIST" \
+PROFILE_SECONDS="$PROFILE_SECONDS" \
+WARMUPS="$WARMUPS" \
+RUNS="$RUNS" \
+GIT_REV="$(git rev-parse HEAD)" \
+"$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch.profiler import ProfilerActivity, profile
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import memory_sample, resolve_auk_snapshot
+from tinytauk.vae.pytorch import PyTorchVAE
+
+out_dir = Path(os.environ["OUT_DIR"])
+seconds_list = [float(value) for value in os.environ["SECONDS_LIST"].split()]
+profile_seconds = float(os.environ["PROFILE_SECONDS"])
+warmups = int(os.environ["WARMUPS"])
+runs = int(os.environ["RUNS"])
+git_rev = os.environ["GIT_REV"]
+
+if not seconds_list or any(value <= 0 for value in seconds_list):
+    raise SystemExit("SECONDS_LIST must contain positive durations")
+if profile_seconds <= 0:
+    raise SystemExit("PROFILE_SECONDS must be positive")
+if warmups < 0:
+    raise SystemExit("WARMUPS must be non-negative")
+if runs < 1:
+    raise SystemExit("RUNS must be positive")
+
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = checkpoint_path.parent
+before = memory_sample()
+load_started = time.perf_counter()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+load_seconds = time.perf_counter() - load_started
+
+latent_fps = vae.sample_rate / vae.downsample_rate
+
+
+def make_latents(seconds: float, seed: int) -> torch.Tensor:
+    frames = max(1, math.ceil(seconds * latent_fps))
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    return torch.randn((1, frames, vae.latent_dim), generator=generator, dtype=torch.float32)
+
+
+def decode_seconds(latents: torch.Tensor) -> tuple[float, float]:
+    started = time.perf_counter()
+    audio = vae.decode(latents)
+    elapsed = time.perf_counter() - started
+    generated_seconds = audio.shape[-1] / vae.sample_rate
+    return elapsed, generated_seconds
+
+
+cases: list[dict[str, Any]] = []
+for case_index, requested_seconds in enumerate(seconds_list, start=1):
+    latents = make_latents(requested_seconds, 4200 + case_index)
+    for _ in range(warmups):
+        vae.decode(latents)
+
+    timings: list[float] = []
+    generated_seconds = 0.0
+    for _ in range(runs):
+        elapsed, generated_seconds = decode_seconds(latents)
+        timings.append(elapsed)
+
+    case = {
+        "requested_seconds": requested_seconds,
+        "latent_frames": latents.shape[1],
+        "generated_seconds": generated_seconds,
+        "runs": timings,
+        "mean_seconds": statistics.fmean(timings),
+        "median_seconds": statistics.median(timings),
+        "min_seconds": min(timings),
+        "max_seconds": max(timings),
+        "mean_rtf": statistics.fmean(timings) / generated_seconds,
+        "median_rtf": statistics.median(timings) / generated_seconds,
+        "min_rtf": min(timings) / generated_seconds,
+    }
+    cases.append(case)
+    print(
+        f"decode {requested_seconds:g}s: "
+        f"median={case['median_seconds']:.3f}s "
+        f"rtf={case['median_rtf']:.3f} "
+        f"runs={', '.join(f'{value:.3f}' for value in timings)}"
+    )
+
+profile_latents = make_latents(profile_seconds, 424242)
+for _ in range(warmups):
+    vae.decode(profile_latents)
+
+with profile(
+    activities=[ProfilerActivity.CPU],
+    record_shapes=True,
+    profile_memory=True,
+) as prof:
+    profiled_audio = vae.decode(profile_latents)
+
+profile_generated_seconds = profiled_audio.shape[-1] / vae.sample_rate
+key_averages = list(prof.key_averages())
+key_averages.sort(key=lambda item: float(item.self_cpu_time_total), reverse=True)
+
+top_operators: list[dict[str, Any]] = []
+for event in key_averages[:50]:
+    top_operators.append(
+        {
+            "operator": event.key,
+            "count": int(event.count),
+            "self_cpu_time_ms": float(event.self_cpu_time_total) / 1000.0,
+            "cpu_time_total_ms": float(event.cpu_time_total) / 1000.0,
+            "self_cpu_memory_kb": float(event.self_cpu_memory_usage) / 1024.0,
+            "cpu_memory_kb": float(event.cpu_memory_usage) / 1024.0,
+        }
+    )
+
+profile_table = prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=50)
+(out_dir / "operators.txt").write_text(profile_table + "\n")
+prof.export_chrome_trace(str(out_dir / "trace.json"))
+
+after = memory_sample()
+result = {
+    "git_rev": git_rev,
+    "torch_version": torch.__version__,
+    "torch_num_threads": torch.get_num_threads(),
+    "torch_num_interop_threads": torch.get_num_interop_threads(),
+    "sample_rate": vae.sample_rate,
+    "downsample_rate": vae.downsample_rate,
+    "latent_fps": latent_fps,
+    "latent_dim": vae.latent_dim,
+    "vae_load_seconds": load_seconds,
+    "warmups": warmups,
+    "runs": runs,
+    "cases": cases,
+    "profile": {
+        "requested_seconds": profile_seconds,
+        "latent_frames": profile_latents.shape[1],
+        "generated_seconds": profile_generated_seconds,
+        "top_operators": top_operators,
+        "operator_table_path": str(out_dir / "operators.txt"),
+        "chrome_trace_path": str(out_dir / "trace.json"),
+    },
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_mb": after.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after.peak_rss_mb),
+}
+(out_dir / "profile.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+
+print("\n================ TOP CPU OPERATORS ================")
+print(profile_table)
+print("\n================ VAE PROFILE SUMMARY ================")
+print(
+    json.dumps(
+        {
+            "vae_load_seconds": result["vae_load_seconds"],
+            "threads": result["torch_num_threads"],
+            "interop_threads": result["torch_num_interop_threads"],
+            "cases": cases,
+            "peak_rss_mb": result["peak_rss_mb"],
+        },
+        indent=2,
+        sort_keys=True,
+    )
+)
+print(f"\nWrote {out_dir / 'profile.json'}")
+print(f"Wrote {out_dir / 'operators.txt'}")
+print(f"Wrote {out_dir / 'trace.json'}")
+PY
