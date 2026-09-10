@@ -6,7 +6,7 @@ cd "$ROOT"
 
 PYTHON="$ROOT/.venv/bin/python"
 if [[ ! -x "$PYTHON" ]]; then
-  echo "Missing .venv; run uv sync --extra quant first." >&2
+  echo "Missing .venv; run uv sync first." >&2
   exit 1
 fi
 
@@ -224,7 +224,9 @@ output = {
     "asr_model": args.model,
     "device": str(device),
     "audio_preprocess": preprocess,
-    "text_normalizer": "whisper-english" if callable(getattr(getattr(processor, "tokenizer", None), "normalize", None)) else "tinytauk-basic",
+    "text_normalizer": "whisper-english"
+    if callable(getattr(getattr(processor, "tokenizer", None), "normalize", None))
+    else "tinytauk-basic",
     "render_git_rev": render["git_rev"],
     "scores": scores,
 }
