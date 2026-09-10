@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import time
 from pathlib import Path
 
@@ -32,22 +31,6 @@ class TinyTAuK:
         checkpoint_path = self._find_transformer_checkpoint(self.snapshot)
         self.load_stage_seconds["snapshot"] = time.perf_counter() - snapshot_started
 
-        # Load the VAE before the larger components. A profile may additionally
-        # materialize one representative Inductor shape here to keep compilation
-        # scratch from overlapping with Qwen and Flux2 residency.
-        component_started = time.perf_counter()
-        self.vae = PyTorchVAE(
-            config.model,
-            config.vae,
-            model_snapshot=self.snapshot,
-        )
-        self.load_stage_seconds["vae"] = time.perf_counter() - component_started
-        if config.vae.compile and config.vae.compile_warmup_seconds > 0:
-            component_started = time.perf_counter()
-            self.vae.prepare_compile(seconds=config.vae.compile_warmup_seconds)
-            self.load_stage_seconds["vae_prepare"] = time.perf_counter() - component_started
-            gc.collect()
-
         component_started = time.perf_counter()
         self.conditioner = TransformersConditioner(
             config.model,
@@ -63,6 +46,14 @@ class TinyTAuK:
             model_snapshot=self.snapshot,
         )
         self.load_stage_seconds["generator"] = time.perf_counter() - component_started
+
+        component_started = time.perf_counter()
+        self.vae = PyTorchVAE(
+            config.model,
+            config.vae,
+            model_snapshot=self.snapshot,
+        )
+        self.load_stage_seconds["vae"] = time.perf_counter() - component_started
         self.load_seconds = time.perf_counter() - started
 
     def _validate_backends(self) -> None:
@@ -73,9 +64,7 @@ class TinyTAuK:
         }
         for name, (actual, expected) in supported.items():
             if actual != expected:
-                raise ValueError(
-                    f"unsupported {name} backend {actual!r}; CPU baseline requires {expected!r}"
-                )
+                raise ValueError(f"unsupported {name} backend {actual!r}; expected {expected!r}")
 
     @staticmethod
     def _find_transformer_checkpoint(snapshot: Path) -> Path:
