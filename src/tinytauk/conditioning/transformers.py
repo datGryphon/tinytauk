@@ -44,9 +44,7 @@ def _torchao_int8_weight_only_config() -> Any:
         from torchao.quantization import Int8WeightOnlyConfig
         from transformers import TorchAoConfig
     except ImportError as exc:
-        raise RuntimeError(
-            "INT8 weight-only conditioning requires the quant extra; run `uv sync --extra quant`"
-        ) from exc
+        raise RuntimeError("INT8 weight-only conditioning requires torchao; run `uv sync`") from exc
 
     # Reference-audio conditioning depends on the audio tower, so it remains FP32.
     return TorchAoConfig(
