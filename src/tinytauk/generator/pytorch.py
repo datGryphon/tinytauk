@@ -134,10 +134,11 @@ class PyTorchAuKGenerator:
             int(math.ceil(request.gen_seconds * self.target_sample_rate / self.downsample_rate)),
         )
         seed = request.seed if request.seed is not None else 1234
-        torch.manual_seed(seed)
-        # Match upstream RNG layout for exact FP32 reference parity.
+        rng = torch.Generator(device=self.device)
+        rng.manual_seed(seed)
         latent = torch.randn(
             (target_len, self.latent_dim),
+            generator=rng,
             device=self.device,
             dtype=self.dtype,
         ).unsqueeze(0)
@@ -154,23 +155,23 @@ class PyTorchAuKGenerator:
         )
         empty_ref_mask = torch.zeros((1, 0), device=self.device, dtype=torch.bool)
 
-        # Keep the time grid in the model dtype to avoid unintended promotion.
         times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=self.dtype)
-        for index in range(len(_FLASH_T_GRID) - 1):
-            velocity = self.transformer(
-                x=latent,
-                text=text,
-                time=times[index],
-                mask=None,
-                c_mask=context_mask,
-                ref=empty_ref,
-                ref_mask=empty_ref_mask,
-                drop_audio_cond=False,
-                drop_text=False,
-                cfg_infer=False,
-                cache=True,
-            )
-            latent = latent + (times[index + 1] - times[index]) * velocity
-
-        self.transformer.clear_cache()
-        return latent
+        try:
+            for index in range(len(_FLASH_T_GRID) - 1):
+                velocity = self.transformer(
+                    x=latent,
+                    text=text,
+                    time=times[index],
+                    mask=None,
+                    c_mask=context_mask,
+                    ref=empty_ref,
+                    ref_mask=empty_ref_mask,
+                    drop_audio_cond=False,
+                    drop_text=False,
+                    cfg_infer=False,
+                    cache=True,
+                )
+                latent = latent + (times[index + 1] - times[index]) * velocity
+            return latent
+        finally:
+            self.transformer.clear_cache()
