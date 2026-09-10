@@ -12,6 +12,7 @@ def test_cpu_profile_loads() -> None:
     assert config.vae.compile is False
     assert config.vae.compile_mode == "default"
     assert config.vae.compile_dynamic is True
+    assert config.vae.compile_warmup_seconds == 0.0
 
 
 def test_component_compile_settings_load() -> None:
@@ -23,12 +24,14 @@ def test_component_compile_settings_load() -> None:
                 "compile": True,
                 "compile_mode": "reduce-overhead",
                 "compile_dynamic": False,
+                "compile_warmup_seconds": 12.5,
             }
         }
     )
     assert config.vae.compile is True
     assert config.vae.compile_mode == "reduce-overhead"
     assert config.vae.compile_dynamic is False
+    assert config.vae.compile_warmup_seconds == 12.5
 
 
 def test_memory_candidate_uses_weight_only_conditioner() -> None:
@@ -37,3 +40,4 @@ def test_memory_candidate_uses_weight_only_conditioner() -> None:
     assert config.conditioner.quantization == "int8-weight-only"
     assert config.generator.quantization == "int8"
     assert config.vae.compile is True
+    assert config.vae.compile_warmup_seconds == 9.0
