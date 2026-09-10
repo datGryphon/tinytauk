@@ -1,39 +1,46 @@
 # AGENTS.md
 
-## Project purpose
+## Project
 
-TinyTAuK is a standalone, memory-efficient AuK-Flash inference engine intended to be qualified on Bean before integration into TinyTalk.
+TinyTAuK is a standalone, memory-efficient AuK-Flash inference runtime. The
+library owns model loading and waveform generation. Callers own serving,
+request queues, transcript validation, retries, chunking, and stitching.
 
-## Hard architectural constraints
+## Conventions
 
-- Keep the production runtime Python/PyTorch-first until profiling proves another backend is necessary.
-- Treat official AuK as a reference oracle, not a production dependency.
-- Preserve compatibility with official AuK-Flash checkpoints/configuration rather than upstream Python APIs.
-- Keep Qwen conditioner, AuK generator, and VAE device/dtype/quantization ownership independent.
-- Do not recursively `.to()` the whole composite model.
-- Avoid materializing the complete Qwen hidden-state stack if mathematically equivalent streaming layer fusion can be implemented.
-- Quantize based on measured quality/runtime/memory results, not ideology. INT4 is a candidate, not a requirement.
-- Do not implement GGUF/Vulkan until CPU qualification on Bean shows it is necessary.
-- If CPU fails on Bean, profile first and accelerate the dominant component only.
-- Do not add TinyTalk, Hermes, HTTP service, speaker-scene orchestration, or audio stitching before Bean runtime qualification.
-- Do not vendor or fork large upstream frameworks when a small compatible implementation is sufficient.
-- Keep model downloads and generated benchmark audio out of git.
+Keep this project simple and direct.
 
-## Development gates
+- Use official AuK/AuK-Flash checkpoints and configuration.
+- Treat upstream AuK as a reference oracle, not a runtime dependency.
+- Keep Qwen conditioning, Flux2 generation, and VAE decode independently
+  configurable by backend, device, dtype, and quantization policy.
+- Do not recursively cast or move the complete model stack.
+- Preserve the Qwen audio-conditioning path while optimizing text-only use.
+- Keep Python/PyTorch as the default implementation until measurements justify
+  another backend.
+- Do not add serving, transcript retry policy, chunking, or audio stitching to
+  this repository.
+- Prefer typed dataclasses and small interfaces over speculative abstractions.
+- Preserve comments that explain numerical parity, checkpoint compatibility,
+  licensing, or backend constraints. Remove comments that only narrate an old
+  experiment or development session.
+- Every optimization needs a benchmark or parity/quality test.
+- Unsupported behavior should fail explicitly.
 
-1. Neptune bootstrap is reproducible.
-2. Upstream AuK-Flash reference outputs are captured.
-3. Unquantized TinyTAuK matches reference behavior.
-4. Qwen layer-fusion memory path is improved without changing results.
-5. CPU quantization profiles are benchmarked on Neptune.
-6. One CPU candidate is frozen.
-7. Exact candidate is benchmarked on Bean.
-8. Only if Bean fails: evaluate targeted GGUF/Vulkan/other acceleration.
-9. Only after Bean passes: define the TinyTalk backend contract.
+## Runtime
 
-## Code quality
+`TinyTAuK.from_pretrained()` and `profiles/cpu.toml` use the same low-memory CPU
+configuration: Qwen INT8 weight-only text weights, dynamic INT8 for selected
+Flux2 Linear layers, and an FP32 Inductor-compiled VAE.
 
-- Prefer typed dataclasses and small protocols over framework-heavy abstractions.
-- Keep imports of heavyweight ML libraries lazy where practical so config/CLI tooling stays cheap.
-- Every optimization must have a benchmark or parity test demonstrating why it exists.
-- Do not hide unsupported behavior behind fallbacks. Fail explicitly.
+Text/instruction generation is supported. `reference_audio` is reserved by the
+public API, but Flux2 reference-audio generation is not implemented yet. One
+engine instance processes one generation at a time because Flux2 caches text
+projections during its four sampling steps.
+
+## Commands
+
+```bash
+./scripts/check
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
+```

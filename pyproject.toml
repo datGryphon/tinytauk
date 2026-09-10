@@ -4,11 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tinytauk"
-version = "0.0.0"
+version = "0.1.0"
 description = "Memory-efficient AuK-Flash inference runtime"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/*.txt", "THIRD_PARTY.md"]
 authors = [
   { name = "TinyTAuK contributors" },
 ]
@@ -17,22 +18,18 @@ dependencies = [
   "huggingface-hub>=0.35",
   "numpy>=1.26",
   "omegaconf>=2.3",
-  "qwen-omni-utils>=0.0.9",
   "safetensors>=0.5",
-  "soundfile>=0.13",
   "torch==2.7.1",
+  "torchao==0.12.0",
   "torchaudio==2.7.1",
   "torchvision==0.22.1",
   "transformers>=4.52,<5",
+  "x-transformers>=1.31.14",
 ]
 
 [project.optional-dependencies]
-quant = [
-  "torchao==0.12.0",
-]
 reference = [
   "torchdiffeq",
-  "x-transformers>=1.31.14",
 ]
 
 [dependency-groups]

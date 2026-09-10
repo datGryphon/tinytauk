@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import torch
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.generator.pytorch import PyTorchAuKGenerator
+from tinytauk.reference import DEFAULT_INSTRUCTION, memory_sample, resolve_auk_snapshot
+from tinytauk.types import Conditioning, GenerationRequest
+
+oracle_dir = Path("benchmarks/results/reference-oracle")
+conditioning_path = oracle_dir / "conditioning.pt"
+mask_path = oracle_dir / "context_mask.pt"
+expected_path = oracle_dir / "sampled_latent.pt"
+for path in (conditioning_path, mask_path, expected_path):
+    if not path.is_file():
+        raise SystemExit(f"Missing oracle tensor: {path}; run bash scripts/reference-oracle first.")
+
+conditioning = Conditioning(
+    values=torch.load(conditioning_path, map_location="cpu", weights_only=True),
+    attention_mask=torch.load(mask_path, map_location="cpu", weights_only=True),
+)
+expected = torch.load(expected_path, map_location="cpu", weights_only=True)
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+
+before = memory_sample()
+load_started = time.perf_counter()
+generator = PyTorchAuKGenerator(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=checkpoint_path.parent,
+)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+generate_started = time.perf_counter()
+actual = generator.generate_latents(
+    GenerationRequest(
+        instruction=DEFAULT_INSTRUCTION,
+        gen_seconds=3.0,
+        seed=42,
+    ),
+    conditioning,
+).detach().cpu()
+generate_seconds = time.perf_counter() - generate_started
+after_generate = memory_sample()
+
+shape_match = actual.shape == expected.shape
+exact_equal = torch.equal(actual, expected)
+max_abs_error = float((actual - expected).abs().max()) if shape_match and actual.numel() else None
+mean_abs_error = float((actual - expected).abs().mean()) if shape_match and actual.numel() else None
+
+result = {
+    "shape": list(actual.shape),
+    "dtype": str(actual.dtype),
+    "shape_match": shape_match,
+    "exact_equal": exact_equal,
+    "max_abs_error": max_abs_error,
+    "mean_abs_error": mean_abs_error,
+    "load_seconds": load_seconds,
+    "generate_seconds": generate_seconds,
+    "realtime_factor": generate_seconds / 3.0,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "rss_after_generate_mb": after_generate.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after_load.peak_rss_mb, after_generate.peak_rss_mb),
+}
+print(json.dumps(result, indent=2, sort_keys=True))
+
+if not (shape_match and exact_equal):
+    raise SystemExit(1)
+PY

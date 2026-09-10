@@ -1,0 +1,346 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+CASES_PATH="${CASES_PATH:-benchmarks/quality/cases.json}"
+OUT_DIR="${OUT_DIR:-benchmarks/results/quality-corpus}"
+MODES="${MODES:-fp32 int8-attn int8-core int8-all}"
+MIN_WEIGHT_ELEMENTS="${MIN_WEIGHT_ELEMENTS:-1000000}"
+FIXTURE_DIR="$OUT_DIR/_conditioning"
+GIT_REV="$(git rev-parse HEAD)"
+mkdir -p "$FIXTURE_DIR"
+
+CASES_PATH="$CASES_PATH" FIXTURE_DIR="$FIXTURE_DIR" REBUILD_CONDITIONING="${REBUILD_CONDITIONING:-0}" \
+  "$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import gc
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from tinytauk.conditioning.transformers import TransformersConditioner
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import resolve_auk_snapshot
+from tinytauk.types import GenerationRequest
+
+cases_path = Path(os.environ["CASES_PATH"])
+fixture_dir = Path(os.environ["FIXTURE_DIR"])
+rebuild = os.environ["REBUILD_CONDITIONING"] == "1"
+payload: dict[str, Any] = json.loads(cases_path.read_text())
+cases: list[dict[str, Any]] = payload["cases"]
+
+
+def fingerprint(case: dict[str, Any]) -> str:
+    value = {
+        "instruction": str(case["instruction"]),
+        "spoken_text": str(case["spoken_text"]),
+        "gen_seconds": float(case["gen_seconds"]),
+        "seed": int(case["seed"]),
+    }
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def fixture_current(case: dict[str, Any]) -> bool:
+    if rebuild:
+        return False
+    case_id = str(case["id"])
+    conditioning_path = fixture_dir / f"{case_id}.conditioning.pt"
+    mask_path = fixture_dir / f"{case_id}.mask.pt"
+    metadata_path = fixture_dir / f"{case_id}.json"
+    if not conditioning_path.is_file() or not mask_path.is_file() or not metadata_path.is_file():
+        return False
+    try:
+        metadata: dict[str, Any] = json.loads(metadata_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return metadata.get("fingerprint") == fingerprint(case)
+
+
+missing = [case for case in cases if not fixture_current(case)]
+if not missing:
+    print("Conditioning fixtures already complete and current.")
+    raise SystemExit(0)
+
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+conditioner = TransformersConditioner(
+    ModelConfig(),
+    ComponentConfig(backend="transformers", device="cpu", dtype="fp32"),
+    auk_checkpoint=checkpoint_path,
+)
+for index, case in enumerate(missing, start=1):
+    case_id = str(case["id"])
+    print(f"conditioning {index}/{len(missing)}: {case_id}")
+    conditioning = conditioner.encode(
+        GenerationRequest(
+            instruction=str(case["instruction"]),
+            gen_seconds=float(case["gen_seconds"]),
+            seed=int(case["seed"]),
+        )
+    )
+    if conditioning.attention_mask is None:
+        raise SystemExit(f"Conditioner returned no attention mask for {case_id}")
+    torch.save(conditioning.values.detach().cpu(), fixture_dir / f"{case_id}.conditioning.pt")
+    torch.save(conditioning.attention_mask.detach().cpu(), fixture_dir / f"{case_id}.mask.pt")
+    metadata = {
+        "fingerprint": fingerprint(case),
+        "instruction": str(case["instruction"]),
+        "spoken_text": str(case["spoken_text"]),
+        "gen_seconds": float(case["gen_seconds"]),
+        "seed": int(case["seed"]),
+    }
+    (fixture_dir / f"{case_id}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
+    del conditioning
+    gc.collect()
+PY
+
+for mode in $MODES; do
+  case "$mode" in
+    fp32|int8-attn|int8-core|int8-all) ;;
+    *) echo "Unknown mode: $mode" >&2; exit 2 ;;
+  esac
+
+  echo >&2
+  echo "================ $mode ================" >&2
+  MODE="$mode" CASES_PATH="$CASES_PATH" OUT_DIR="$OUT_DIR" FIXTURE_DIR="$FIXTURE_DIR" \
+    MIN_WEIGHT_ELEMENTS="$MIN_WEIGHT_ELEMENTS" GIT_REV="$GIT_REV" "$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import gc
+import json
+import math
+import os
+import time
+import wave
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch import nn
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.generator.pytorch import PyTorchAuKGenerator
+from tinytauk.quant.dynamic import (
+    apply_dynamic_int8_linears,
+    configure_x86_quantized_engine,
+    select_dynamic_int8_linears,
+)
+from tinytauk.reference import memory_sample, resolve_auk_snapshot
+from tinytauk.types import Conditioning, GenerationRequest
+from tinytauk.vae.pytorch import PyTorchVAE
+
+mode = os.environ["MODE"]
+cases_path = Path(os.environ["CASES_PATH"])
+out_dir = Path(os.environ["OUT_DIR"])
+fixture_dir = Path(os.environ["FIXTURE_DIR"])
+min_weight_elements = int(os.environ["MIN_WEIGHT_ELEMENTS"])
+git_rev = os.environ["GIT_REV"]
+payload: dict[str, Any] = json.loads(cases_path.read_text())
+cases: list[dict[str, Any]] = payload["cases"]
+mode_dir = out_dir / mode
+mode_dir.mkdir(parents=True, exist_ok=True)
+
+
+def write_pcm16(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
+    samples = audio.squeeze(0).detach().cpu().to(torch.float32).clamp(-1.0, 1.0)
+    pcm = (samples * 32767.0).round().to(torch.int16).contiguous().numpy().astype("<i2", copy=False)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(pcm.tobytes())
+
+
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = checkpoint_path.parent
+before = memory_sample()
+load_started = time.perf_counter()
+generator = PyTorchAuKGenerator(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+generator_load_seconds = time.perf_counter() - load_started
+
+quant_engine: str | None = None
+selected_names: tuple[str, ...] = ()
+selected_weight_elements = 0
+quantize_seconds = 0.0
+if mode != "fp32":
+    selected_names = select_dynamic_int8_linears(
+        generator.transformer,
+        min_weight_elements=min_weight_elements,
+        include_sensitive=mode == "int8-all",
+    )
+    if mode == "int8-attn":
+        selected_names = tuple(name for name in selected_names if ".attn." in name)
+    modules = dict(generator.transformer.named_modules())
+    selected_weight_elements = sum(
+        int(module.weight.numel())
+        for name in selected_names
+        if isinstance((module := modules[name]), nn.Linear)
+    )
+    quant_engine = configure_x86_quantized_engine()
+    quant_started = time.perf_counter()
+    apply_dynamic_int8_linears(generator.transformer, selected_names)
+    quantize_seconds = time.perf_counter() - quant_started
+    gc.collect()
+
+vae_load_started = time.perf_counter()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+vae_load_seconds = time.perf_counter() - vae_load_started
+
+case_results: list[dict[str, Any]] = []
+total_requested_seconds = 0.0
+total_generator_seconds = 0.0
+total_vae_seconds = 0.0
+for index, case in enumerate(cases, start=1):
+    case_id = str(case["id"])
+    requested_seconds = float(case["gen_seconds"])
+    print(f"render {index}/{len(cases)}: {case_id}")
+    conditioning = Conditioning(
+        values=torch.load(
+            fixture_dir / f"{case_id}.conditioning.pt",
+            map_location="cpu",
+            weights_only=True,
+        ),
+        attention_mask=torch.load(
+            fixture_dir / f"{case_id}.mask.pt",
+            map_location="cpu",
+            weights_only=True,
+        ),
+    )
+    request = GenerationRequest(
+        instruction=str(case["instruction"]),
+        gen_seconds=requested_seconds,
+        seed=int(case["seed"]),
+    )
+    generate_started = time.perf_counter()
+    latents = generator.generate_latents(request, conditioning).detach().cpu()
+    generator_seconds = time.perf_counter() - generate_started
+    decode_started = time.perf_counter()
+    audio = vae.decode(latents).detach().cpu()
+    vae_seconds = time.perf_counter() - decode_started
+    wav_path = mode_dir / f"{case_id}.wav"
+    write_pcm16(wav_path, audio, vae.sample_rate)
+
+    flat = audio.float().flatten()
+    peak = float(flat.abs().max()) if flat.numel() else 0.0
+    rms = float(torch.sqrt(flat.square().mean())) if flat.numel() else 0.0
+    clipped_fraction = float((flat.abs() >= 1.0).float().mean()) if flat.numel() else 0.0
+    generated_seconds = audio.shape[-1] / vae.sample_rate
+    hot_seconds = generator_seconds + vae_seconds
+    case_results.append(
+        {
+            "id": case_id,
+            "spoken_text": str(case["spoken_text"]),
+            "instruction": str(case["instruction"]),
+            "seed": int(case["seed"]),
+            "requested_seconds": requested_seconds,
+            "generated_seconds": generated_seconds,
+            "generator_seconds": generator_seconds,
+            "generator_rtf": generator_seconds / generated_seconds,
+            "vae_seconds": vae_seconds,
+            "vae_rtf": vae_seconds / generated_seconds,
+            "hot_seconds": hot_seconds,
+            "hot_rtf": hot_seconds / generated_seconds,
+            "peak_amplitude": peak,
+            "rms": rms,
+            "clipped_fraction": clipped_fraction,
+            "wav_path": str(wav_path),
+        }
+    )
+    total_requested_seconds += generated_seconds
+    total_generator_seconds += generator_seconds
+    total_vae_seconds += vae_seconds
+    del conditioning, latents, audio
+    gc.collect()
+
+after = memory_sample()
+audio_rms = math.sqrt(
+    sum(case["rms"] ** 2 * case["generated_seconds"] for case in case_results)
+    / total_requested_seconds
+)
+result = {
+    "mode": mode,
+    "git_rev": git_rev,
+    "cases_path": str(cases_path),
+    "case_count": len(case_results),
+    "generator_load_seconds": generator_load_seconds,
+    "vae_load_seconds": vae_load_seconds,
+    "quant_engine": quant_engine,
+    "quantize_seconds": quantize_seconds,
+    "selected_linear_count": len(selected_names),
+    "selected_weight_elements": selected_weight_elements,
+    "total_generated_seconds": total_requested_seconds,
+    "total_generator_seconds": total_generator_seconds,
+    "generator_rtf": total_generator_seconds / total_requested_seconds,
+    "total_vae_seconds": total_vae_seconds,
+    "vae_rtf": total_vae_seconds / total_requested_seconds,
+    "total_hot_seconds": total_generator_seconds + total_vae_seconds,
+    "hot_rtf": (total_generator_seconds + total_vae_seconds) / total_requested_seconds,
+    "audio_rms": audio_rms,
+    "peak_rss_mb": max(before.peak_rss_mb, after.peak_rss_mb),
+    "torch_num_threads": torch.get_num_threads(),
+    "torch_num_interop_threads": torch.get_num_interop_threads(),
+    "cases": case_results,
+}
+(mode_dir / "render.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+print(json.dumps(result, indent=2, sort_keys=True))
+PY
+done
+
+OUT_DIR="$OUT_DIR" MODES="$MODES" CASES_PATH="$CASES_PATH" GIT_REV="$GIT_REV" "$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+out_dir = Path(os.environ["OUT_DIR"])
+modes = os.environ["MODES"].split()
+results: dict[str, Any] = {
+    mode: json.loads((out_dir / mode / "render.json").read_text()) for mode in modes
+}
+fp32_rms = float(results["fp32"]["audio_rms"]) if "fp32" in results else 0.0
+summary = {
+    "git_rev": os.environ["GIT_REV"],
+    "cases_path": os.environ["CASES_PATH"],
+    "modes": modes,
+    "cases": json.loads(Path(os.environ["CASES_PATH"]).read_text())["cases"],
+    "performance": {
+        mode: {
+            "generator_rtf": result["generator_rtf"],
+            "vae_rtf": result["vae_rtf"],
+            "hot_rtf": result["hot_rtf"],
+            "audio_rms": result["audio_rms"],
+            "rms_ratio_vs_fp32": (
+                result["audio_rms"] / fp32_rms if fp32_rms > 0.0 else None
+            ),
+            "selected_linear_count": result["selected_linear_count"],
+        }
+        for mode, result in results.items()
+    },
+}
+(out_dir / "render-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+print("\n================ CORPUS SUMMARY ================")
+print(json.dumps(summary["performance"], indent=2, sort_keys=True))
+PY

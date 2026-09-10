@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REF_DIR="$ROOT/.reference"
+AUK_DIR="$REF_DIR/AuK"
+AUK_COMMIT="d9f30ffe4231dbc90b48cc83a35d310fece0b060"
+
+cd "$ROOT"
+uv sync --extra reference
+
+mkdir -p "$REF_DIR"
+if [[ ! -d "$AUK_DIR/.git" ]]; then
+  git clone https://github.com/Tencent-Hunyuan/AuK.git "$AUK_DIR"
+fi
+
+git -C "$AUK_DIR" fetch origin "$AUK_COMMIT"
+git -C "$AUK_DIR" checkout --detach "$AUK_COMMIT"
+
+uv pip install --python "$ROOT/.venv/bin/python" --no-deps -e "$AUK_DIR"
+
+"$ROOT/.venv/bin/python" - <<'PY'
+from importlib.metadata import version
+
+print(f"AuK reference installed: {version('auk')}")
+PY

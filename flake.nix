@@ -21,15 +21,16 @@
               ruff
               ffmpeg
               libsndfile
+              zlib
               pkg-config
               git
-              git-lfs
               gcc
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
               pkgs.libsndfile
               pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
             ];
 
             shellHook = ''
@@ -39,7 +40,7 @@
               export PYTHONUNBUFFERED=1
 
               echo "TinyTAuK dev shell: Python $(python --version 2>&1), uv $(uv --version 2>&1)"
-              echo "Run: uv sync --extra quant && ./scripts/check"
+              echo "Run: uv sync && ./scripts/check"
             '';
           };
         });

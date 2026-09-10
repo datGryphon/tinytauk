@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import memory_sample, resolve_auk_snapshot
+from tinytauk.vae.pytorch import PyTorchVAE
+
+oracle_dir = Path("benchmarks/results/reference-oracle")
+latent_path = oracle_dir / "sampled_latent.pt"
+wav_path = oracle_dir / "reference.wav"
+if not latent_path.is_file() or not wav_path.is_file():
+    raise SystemExit("Missing oracle artifacts; run bash scripts/reference-oracle first.")
+
+config_path, _ = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = config_path.parent
+
+before = memory_sample()
+load_started = time.perf_counter()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(backend="pytorch", device="cpu", dtype="fp32"),
+    model_snapshot=snapshot,
+)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+latents = torch.load(latent_path, map_location="cpu", weights_only=True)
+decode_started = time.perf_counter()
+actual = vae.decode(latents)
+decode_seconds = time.perf_counter() - decode_started
+after_decode = memory_sample()
+
+expected, expected_sr = torchaudio.load(wav_path)
+actual = actual.squeeze(0).cpu()
+shape_match = actual.shape == expected.shape
+sample_rate_match = vae.sample_rate == expected_sr
+
+if shape_match and actual.numel():
+    error = (actual - expected).abs()
+    max_abs_error = float(error.max())
+    mean_abs_error = float(error.mean())
+else:
+    max_abs_error = None
+    mean_abs_error = None
+
+# torchaudio.save may serialize the oracle WAV as integer PCM. One 16-bit LSB
+# is therefore the strict parity tolerance when comparing against the file.
+wav_tolerance = 1.0 / 32768.0
+within_wav_tolerance = shape_match and max_abs_error is not None and max_abs_error <= wav_tolerance
+
+result = {
+    "shape": list(actual.shape),
+    "expected_shape": list(expected.shape),
+    "shape_match": shape_match,
+    "sample_rate": vae.sample_rate,
+    "expected_sample_rate": expected_sr,
+    "sample_rate_match": sample_rate_match,
+    "exact_equal": torch.equal(actual, expected) if shape_match else False,
+    "max_abs_error": max_abs_error,
+    "mean_abs_error": mean_abs_error,
+    "wav_tolerance": wav_tolerance,
+    "within_wav_tolerance": within_wav_tolerance,
+    "load_seconds": load_seconds,
+    "decode_seconds": decode_seconds,
+    "realtime_factor": decode_seconds / (actual.shape[-1] / vae.sample_rate),
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "rss_after_decode_mb": after_decode.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after_load.peak_rss_mb, after_decode.peak_rss_mb),
+}
+print(json.dumps(result, indent=2, sort_keys=True))
+
+if not (shape_match and sample_rate_match and within_wav_tolerance):
+    raise SystemExit(1)
+PY

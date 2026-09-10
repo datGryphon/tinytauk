@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+import torch
+
+from tinytauk.conditioning.transformers import TransformersConditioner
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import DEFAULT_INSTRUCTION, memory_sample, resolve_auk_snapshot
+from tinytauk.types import GenerationRequest
+
+oracle_dir = Path("benchmarks/results/reference-oracle")
+expected_path = oracle_dir / "conditioning.pt"
+mask_path = oracle_dir / "context_mask.pt"
+if not expected_path.is_file() or not mask_path.is_file():
+    raise SystemExit("Missing oracle tensors; run bash scripts/reference-oracle first.")
+
+_, checkpoint_path = resolve_auk_snapshot("tencent/AuK-Flash")
+before = memory_sample()
+load_started = time.perf_counter()
+conditioner = TransformersConditioner(
+    ModelConfig(),
+    ComponentConfig(backend="transformers", device="cpu", dtype="bf16"),
+    auk_checkpoint=checkpoint_path,
+    upstream_parity=True,
+)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+encode_started = time.perf_counter()
+actual = conditioner.encode(
+    GenerationRequest(
+        instruction=DEFAULT_INSTRUCTION,
+        gen_seconds=3.0,
+        seed=42,
+    )
+)
+encode_seconds = time.perf_counter() - encode_started
+after_encode = memory_sample()
+
+expected = torch.load(expected_path, map_location="cpu", weights_only=True)
+expected_mask = torch.load(mask_path, map_location="cpu", weights_only=True)
+actual_values = actual.values.detach().cpu()
+actual_mask = actual.attention_mask.detach().cpu()
+
+shape_match = actual_values.shape == expected.shape
+mask_equal = torch.equal(actual_mask, expected_mask)
+exact_equal = torch.equal(actual_values, expected)
+max_abs_error = (
+    float((actual_values - expected).abs().max())
+    if shape_match and actual_values.numel()
+    else None
+)
+
+result = {
+    "shape": list(actual_values.shape),
+    "dtype": str(actual_values.dtype),
+    "shape_match": shape_match,
+    "mask_equal": mask_equal,
+    "exact_equal": exact_equal,
+    "max_abs_error": max_abs_error,
+    "load_seconds": load_seconds,
+    "encode_seconds": encode_seconds,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "rss_after_encode_mb": after_encode.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after_load.peak_rss_mb, after_encode.peak_rss_mb),
+}
+print(json.dumps(result, indent=2, sort_keys=True))
+
+if not (shape_match and mask_equal and exact_equal):
+    raise SystemExit(1)
+PY

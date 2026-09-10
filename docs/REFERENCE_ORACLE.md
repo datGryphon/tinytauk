@@ -1,20 +1,41 @@
 # Upstream AuK reference oracle
 
-This document will hold the exact procedure used to capture parity fixtures from the official AuK-Flash implementation.
+The reference oracle runs a pinned upstream AuK implementation on CPU and records deterministic parity boundaries for TinyTAuK.
+
+## Setup
+
+```bash
+bash scripts/setup-reference
+```
+
+## Run
+
+```bash
+bash scripts/reference-oracle
+```
+
+Artifacts are written under `benchmarks/results/reference-oracle/` and are intentionally ignored by Git:
+
+- `reference.json` — environment, timing, realtime factor, memory, and tensor metadata.
+- `reference.wav` — generated waveform.
+- `conditioning.pt` — fused Qwen hidden representation consumed by Flux2Edit.
+- `context_mask.pt` — conditioning attention mask.
+- `sampled_latent.pt` — final target latent from the sampler before VAE denormalization/decoding.
+
+Tensor metadata in `reference.json` includes shape, dtype, element count, and a SHA-256 digest over the raw tensor bytes.
 
 ## Rules
 
 - Keep the oracle environment isolated from the production TinyTAuK dependency graph.
-- Record upstream commit SHA, AuK-Flash checkpoint revision, Qwen revision, PyTorch version, Transformers version and seed with every fixture set.
-- Never compare only final WAV files if an intermediate boundary can be captured deterministically.
-- Generated reference artifacts should remain outside git unless they are intentionally tiny fixtures.
+- Record upstream commit SHA, AuK-Flash checkpoint location, Qwen model, PyTorch version, Transformers version and seed with every fixture set.
+- Compare intermediate tensor boundaries before relying on final waveform comparisons.
+- Generated reference artifacts remain outside Git unless intentionally promoted to tiny fixtures.
 
-## Planned boundaries
+## Current parity boundaries
 
-1. preprocessed Qwen inputs
-2. Qwen hidden-state/layer-fusion result
-3. sampler input/noise at fixed seed
-4. final AuK latent
-5. VAE waveform
+1. fused Qwen hidden-state representation
+2. conditioning context mask
+3. final target latent produced by the AuK-Flash sampler
+4. decoded waveform
 
-The exact capture code is a Phase 1 task and is intentionally absent from v0.
+Preprocessed Qwen inputs and fixed-seed sampler/noise capture can be added if the standalone implementation needs a finer debugging boundary.

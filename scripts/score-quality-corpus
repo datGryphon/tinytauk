@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec "$PYTHON" - "$@" <<'PY'
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import wave
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+import torchaudio.functional as AF
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+
+from tinytauk.quality import char_error_rate, combine_error_rates, word_error_rate
+
+
+def read_wav(path: Path) -> tuple[torch.Tensor, int]:
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        sample_width = handle.getsampwidth()
+        sample_rate = handle.getframerate()
+        frames = handle.readframes(handle.getnframes())
+    if channels != 1 or sample_width != 2:
+        raise ValueError(f"Expected mono PCM16 WAV, got channels={channels} width={sample_width}")
+    samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
+    return torch.from_numpy(samples), sample_rate
+
+
+def resolve_device(requested: str) -> torch.device:
+    if requested == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(requested)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("QUALITY_DEVICE requested CUDA, but torch.cuda.is_available() is false")
+    return device
+
+
+def normalize_level(waveform: torch.Tensor, target_rms: float) -> torch.Tensor:
+    if target_rms <= 0.0 or not waveform.numel():
+        return waveform
+    rms = float(torch.sqrt(waveform.float().square().mean()))
+    if rms <= 1e-8:
+        return waveform
+    normalized = waveform * (target_rms / rms)
+    peak = float(normalized.abs().max())
+    if peak > 0.99:
+        normalized = normalized * (0.99 / peak)
+    return normalized
+
+
+def load_cache(
+    path: Path,
+    model_id: str,
+    preprocess: dict[str, Any],
+    retranscribe: bool,
+) -> dict[str, Any]:
+    fresh = {"model_id": model_id, "preprocess": preprocess, "transcripts": {}}
+    if retranscribe or not path.is_file():
+        return fresh
+    payload: dict[str, Any] = json.loads(path.read_text())
+    if payload.get("model_id") != model_id or payload.get("preprocess") != preprocess:
+        return fresh
+    return payload
+
+
+parser = argparse.ArgumentParser(description="Score TinyTAuK quality-corpus WAV artifacts")
+parser.add_argument(
+    "result_dir",
+    nargs="?",
+    type=Path,
+    default=Path("benchmarks/results/quality-corpus"),
+)
+parser.add_argument("--model", default=os.environ.get("QUALITY_ASR_MODEL", "openai/whisper-small.en"))
+parser.add_argument("--device", default=os.environ.get("QUALITY_DEVICE", "auto"))
+parser.add_argument(
+    "--target-rms",
+    type=float,
+    default=float(os.environ.get("QUALITY_TARGET_RMS", "0.1")),
+    help="Normalize audio to this RMS before ASR; set 0 to score raw levels",
+)
+parser.add_argument("--retranscribe", action="store_true")
+args = parser.parse_args()
+
+summary_path = args.result_dir / "render-summary.json"
+if not summary_path.is_file():
+    raise SystemExit(f"Missing corpus render summary: {summary_path}")
+render: dict[str, Any] = json.loads(summary_path.read_text())
+render_modes: list[str] = list(render["modes"])
+if "fp32" not in render_modes:
+    raise SystemExit("Quality scoring requires an fp32 render baseline")
+modes = ["fp32", *(mode for mode in render_modes if mode != "fp32")]
+cases: list[dict[str, Any]] = list(render["cases"])
+
+device = resolve_device(args.device)
+dtype = torch.float16 if device.type == "cuda" else torch.float32
+print(f"Loading ASR model {args.model} on {device} ({dtype})")
+print(f"ASR input level normalization target RMS: {args.target_rms}")
+processor: Any = AutoProcessor.from_pretrained(args.model)
+model: Any = AutoModelForSpeechSeq2Seq.from_pretrained(args.model, torch_dtype=dtype)
+model = model.to(device).eval()
+
+preprocess = {
+    "sample_rate": 16000,
+    "target_rms": args.target_rms,
+}
+cache_path = args.result_dir / "transcripts.json"
+cache = load_cache(cache_path, args.model, preprocess, args.retranscribe)
+transcripts: dict[str, dict[str, str]] = cache.setdefault("transcripts", {})
+
+
+def transcribe(path: Path) -> str:
+    waveform, sample_rate = read_wav(path)
+    if sample_rate != 16000:
+        waveform = AF.resample(waveform, sample_rate, 16000)
+    waveform = normalize_level(waveform, args.target_rms)
+    inputs: Any = processor(waveform.numpy(), sampling_rate=16000, return_tensors="pt")
+    input_features = inputs.input_features.to(device=device, dtype=dtype)
+    with torch.inference_mode():
+        generated_ids = model.generate(input_features)
+    return str(processor.batch_decode(generated_ids, skip_special_tokens=True)[0]).strip()
+
+
+def normalize_for_score(text: str) -> str:
+    tokenizer: Any = getattr(processor, "tokenizer", None)
+    normalizer: Any = getattr(tokenizer, "normalize", None)
+    if callable(normalizer):
+        return str(normalizer(text)).strip()
+    return text
+
+
+for mode in modes:
+    mode_transcripts = transcripts.setdefault(mode, {})
+    for case in cases:
+        case_id = str(case["id"])
+        if case_id in mode_transcripts and not args.retranscribe:
+            continue
+        wav_path = args.result_dir / mode / f"{case_id}.wav"
+        if not wav_path.is_file():
+            raise SystemExit(f"Missing WAV artifact: {wav_path}")
+        print(f"transcribe {mode}/{case_id}")
+        mode_transcripts[case_id] = transcribe(wav_path)
+        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True) + "\n")
+
+scores: dict[str, Any] = {}
+fp32_case_scores: dict[str, Any] = {}
+for mode in modes:
+    canonical_wers = []
+    canonical_cers = []
+    regression_wers = []
+    regression_cers = []
+    case_scores: dict[str, Any] = {}
+    for case in cases:
+        case_id = str(case["id"])
+        target = str(case["spoken_text"])
+        transcript = transcripts[mode][case_id]
+        normalized_target = normalize_for_score(target)
+        normalized_transcript = normalize_for_score(transcript)
+        canonical_wer = word_error_rate(normalized_target, normalized_transcript)
+        canonical_cer = char_error_rate(normalized_target, normalized_transcript)
+        canonical_wers.append(canonical_wer)
+        canonical_cers.append(canonical_cer)
+        result: dict[str, Any] = {
+            "target": target,
+            "transcript": transcript,
+            "normalized_target": normalized_target,
+            "normalized_transcript": normalized_transcript,
+            "wer": asdict(canonical_wer),
+            "cer": asdict(canonical_cer),
+        }
+        if mode == "fp32":
+            fp32_case_scores[case_id] = result
+        else:
+            fp32_transcript = transcripts["fp32"][case_id]
+            normalized_fp32 = normalize_for_score(fp32_transcript)
+            regression_wer = word_error_rate(normalized_fp32, normalized_transcript)
+            regression_cer = char_error_rate(normalized_fp32, normalized_transcript)
+            regression_wers.append(regression_wer)
+            regression_cers.append(regression_cer)
+            result["vs_fp32"] = {
+                "fp32_transcript": fp32_transcript,
+                "normalized_fp32_transcript": normalized_fp32,
+                "wer": asdict(regression_wer),
+                "cer": asdict(regression_cer),
+                "wer_delta": canonical_wer.rate - fp32_case_scores[case_id]["wer"]["rate"],
+                "cer_delta": canonical_cer.rate - fp32_case_scores[case_id]["cer"]["rate"],
+            }
+        case_scores[case_id] = result
+
+    corpus_wer = combine_error_rates(canonical_wers)
+    corpus_cer = combine_error_rates(canonical_cers)
+    corpus: dict[str, Any] = {
+        "wer": asdict(corpus_wer),
+        "cer": asdict(corpus_cer),
+    }
+    if mode != "fp32":
+        regression_wer = combine_error_rates(regression_wers)
+        regression_cer = combine_error_rates(regression_cers)
+        fp32_wer = scores["fp32"]["corpus"]["wer"]["rate"]
+        fp32_cer = scores["fp32"]["corpus"]["cer"]["rate"]
+        corpus["vs_fp32"] = {
+            "transcript_wer": asdict(regression_wer),
+            "transcript_cer": asdict(regression_cer),
+            "wer_delta": corpus_wer.rate - fp32_wer,
+            "cer_delta": corpus_cer.rate - fp32_cer,
+        }
+    scores[mode] = {"corpus": corpus, "cases": case_scores}
+
+output = {
+    "asr_model": args.model,
+    "device": str(device),
+    "audio_preprocess": preprocess,
+    "text_normalizer": "whisper-english"
+    if callable(getattr(getattr(processor, "tokenizer", None), "normalize", None))
+    else "tinytauk-basic",
+    "render_git_rev": render["git_rev"],
+    "scores": scores,
+}
+output_path = args.result_dir / "quality-scores.json"
+output_path.write_text(json.dumps(output, indent=2, sort_keys=True) + "\n")
+
+print("\n================ QUALITY SUMMARY ================")
+for mode in modes:
+    corpus = scores[mode]["corpus"]
+    line = f"{mode:10s} WER={corpus['wer']['rate']:.2%} CER={corpus['cer']['rate']:.2%}"
+    if mode != "fp32":
+        regression = corpus["vs_fp32"]
+        line += (
+            f"  dWER={regression['wer_delta']:+.2%}"
+            f"  vsFP32-WER={regression['transcript_wer']['rate']:.2%}"
+        )
+    print(line)
+print(f"\nWrote {output_path}")
+PY

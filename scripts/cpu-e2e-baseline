@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ ! -x "$ROOT/.venv/bin/python" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec "$ROOT/.venv/bin/python" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+from tinytauk.reference import DEFAULT_INSTRUCTION, memory_sample
+
+output_dir = Path("benchmarks/results/cpu-baseline")
+output_dir.mkdir(parents=True, exist_ok=True)
+output_wav = output_dir / "baseline.wav"
+output_json = output_dir / "baseline.json"
+
+before = memory_sample()
+load_started = time.perf_counter()
+engine = TinyTAuK.from_config("profiles/cpu-baseline.toml")
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+result = engine.generate(
+    DEFAULT_INSTRUCTION,
+    gen_seconds=3.0,
+    seed=42,
+)
+after_generate = memory_sample()
+
+if not isinstance(result.audio, torch.Tensor):
+    raise SystemExit("TinyTAuK returned a non-tensor audio result")
+if result.audio.ndim != 2 or result.audio.shape[0] != 1:
+    raise SystemExit(f"Unexpected audio shape: {tuple(result.audio.shape)}")
+if not torch.isfinite(result.audio).all():
+    raise SystemExit("Generated audio contains NaN or Inf")
+
+expected_samples = int(round(3.0 * result.sample_rate))
+shape_match = result.audio.shape[-1] == expected_samples
+sample_rate_match = result.sample_rate == 24_000
+finite = bool(torch.isfinite(result.audio).all())
+
+peak_amplitude = float(result.audio.abs().max()) if result.audio.numel() else 0.0
+rms = float(torch.sqrt(torch.mean(result.audio.square()))) if result.audio.numel() else 0.0
+
+torchaudio.save(output_wav, result.audio, result.sample_rate)
+
+report = {
+    "audio_shape": list(result.audio.shape),
+    "sample_rate": result.sample_rate,
+    "generated_seconds": result.generated_seconds,
+    "shape_match": shape_match,
+    "sample_rate_match": sample_rate_match,
+    "finite": finite,
+    "peak_amplitude": peak_amplitude,
+    "rms": rms,
+    "load_seconds": load_seconds,
+    "load_stage_seconds": engine.load_stage_seconds,
+    "generate_seconds": result.wall_seconds,
+    "generate_stage_seconds": result.stage_seconds,
+    "realtime_factor": result.wall_seconds / result.generated_seconds,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "rss_after_generate_mb": after_generate.current_rss_mb,
+    "peak_rss_mb": max(before.peak_rss_mb, after_load.peak_rss_mb, after_generate.peak_rss_mb),
+    "output_wav": str(output_wav),
+}
+output_json.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+print(json.dumps(report, indent=2, sort_keys=True))
+
+if not math.isclose(result.generated_seconds, 3.0, rel_tol=0.0, abs_tol=1.0 / result.sample_rate):
+    raise SystemExit(1)
+if not (shape_match and sample_rate_match and finite):
+    raise SystemExit(1)
+PY

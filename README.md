@@ -1,58 +1,89 @@
-# TinyTAuK
+# tinytauk
 
-TinyTAuK is an experimental, memory-efficient Python/PyTorch inference runtime for Tencent Hunyuan AuK-Flash.
+Memory-efficient AuK-Flash inference runtime for CPU environments.
 
-The initial objective is deliberately narrow:
-
-1. reproduce AuK-Flash inference on CPU,
-2. establish parity against the upstream implementation,
-3. reduce memory through component isolation and quantization,
-4. qualify the resulting runtime on Bean,
-5. only then expose it as a TinyTalk backend.
-
-TinyTAuK is **not** currently a TTS HTTP service and does not contain TinyTalk or Hermes integration.
+TinyTAuK loads the official Tencent Hunyuan AuK-Flash checkpoints directly. It
+is a library/CLI, not a TTS server; callers own serving, request queues,
+validation, retries, chunking, and audio stitching.
 
 ## Status
 
-**v0 scaffold.** The repository structure, configuration model, CLI, benchmark result schema, Nix development shell, and test harness are present. AuK model execution is intentionally not implemented yet.
+Version `0.1.0` supports text/instruction TTS with:
 
-See [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md).
+- Qwen2.5-Omni conditioning and AuK hidden-state fusion;
+- AuK-Flash four-step Flux2 generation;
+- BigVGAN waveform decode;
+- INT8 weight-only Qwen text weights;
+- dynamic INT8 Flux2 core weights;
+- FP32 Inductor-compiled VAE.
 
-## Development
+Reference-audio generation is not implemented yet. The Qwen audio tower is
+retained for that path.
 
-The expected development environment is Nix + uv:
+## Setup
 
 ```bash
 nix develop
-uv sync --extra quant
-uv run pytest
-uv run tinytauk doctor
+uv sync
+./scripts/check
 ```
 
-If you use direnv:
+## CLI
 
 ```bash
-direnv allow
+uv run tinytauk generate \
+  --seconds 9 \
+  --output output.wav \
+  'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully.".'
 ```
 
-The first `nix develop` will create `flake.lock`; commit it after verifying the shell on Neptune. The first `uv sync` will create `uv.lock`; commit it once the Python dependency set has been validated.
+The command uses the built-in CPU configuration, writes a 24 kHz WAV, and
+prints generation timing as JSON. Pass `--profile` to use a TOML runtime
+profile instead.
 
-## Initial CLI
+The VAE compiles lazily on first use. Long-running callers should keep one
+`TinyTAuK` instance resident and run one disposable generation before serving.
+A single instance processes one generation at a time.
+
+## Python API
+
+```python
+from tinytauk import TinyTAuK
+
+engine = TinyTAuK.from_pretrained()
+result = engine.generate(
+    'Generate speech based on the following description: "A calm, natural technical narration". '
+    'The content to speak is: "The service restarted successfully.".',
+    gen_seconds=9,
+)
+```
+
+`result.audio` is a CPU `torch.Tensor`; `sample_rate`, `generated_seconds`, and
+per-stage timings are also returned.
+
+Use `TinyTAuK.from_config(...)` for explicit component/runtime configuration.
+`profiles/cpu.toml` contains the same low-memory CPU configuration used by
+`from_pretrained()`.
+
+## Benchmarks
 
 ```bash
-uv run tinytauk doctor
-uv run tinytauk config profiles/cpu-baseline.toml
-uv run tinytauk benchmark --target-seconds 10 --dry-run
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
 
-`generate` is reserved for Phase 2 and currently fails explicitly rather than pretending inference is implemented.
+See `docs/CPU_BASELINE.md` for the measurements behind the CPU profile and
+`docs/QUALITY_BENCHMARK.md` for the speech-quality gate.
 
-## Model artifacts
+## Reference oracle
 
-Do not commit model weights, generated audio, or reference model caches. Keep Hugging Face caches outside the repository.
+```bash
+bash scripts/setup-reference
+bash scripts/reference-oracle
+```
 
-The production implementation should consume official AuK/AuK-Flash checkpoints without requiring an installed copy of the upstream `auk` package. Upstream AuK remains the reference oracle during parity development.
+The reference checkout and generated artifacts are ignored by Git. See
+`docs/REFERENCE_ORACLE.md`.
 
-## Licensing
+## License
 
-This scaffold does not vendor Tencent AuK source code. AuK itself is released under MIT; if upstream code is later copied or adapted, preserve the relevant Tencent copyright and license notices in the affected files and update `THIRD_PARTY.md`.
+MIT. Adapted upstream code and licenses are listed in `THIRD_PARTY.md`.
