@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import time
 from pathlib import Path
 
@@ -31,6 +32,22 @@ class TinyTAuK:
         checkpoint_path = self._find_transformer_checkpoint(self.snapshot)
         self.load_stage_seconds["snapshot"] = time.perf_counter() - snapshot_started
 
+        # Materialize the compiled VAE graph before Qwen and Flux2 are resident.
+        # This trades startup time for a lower process high-water mark without
+        # changing inference numerics or the steady-state component set.
+        component_started = time.perf_counter()
+        self.vae = PyTorchVAE(
+            config.model,
+            config.vae,
+            model_snapshot=self.snapshot,
+        )
+        self.load_stage_seconds["vae"] = time.perf_counter() - component_started
+        if config.vae.compile:
+            component_started = time.perf_counter()
+            self.vae.prepare_compile(seconds=3.0)
+            self.load_stage_seconds["vae_prepare"] = time.perf_counter() - component_started
+            gc.collect()
+
         component_started = time.perf_counter()
         self.conditioner = TransformersConditioner(
             config.model,
@@ -46,14 +63,6 @@ class TinyTAuK:
             model_snapshot=self.snapshot,
         )
         self.load_stage_seconds["generator"] = time.perf_counter() - component_started
-
-        component_started = time.perf_counter()
-        self.vae = PyTorchVAE(
-            config.model,
-            config.vae,
-            model_snapshot=self.snapshot,
-        )
-        self.load_stage_seconds["vae"] = time.perf_counter() - component_started
         self.load_seconds = time.perf_counter() - started
 
     def _validate_backends(self) -> None:
