@@ -31,8 +31,8 @@ def test_component_compile_settings_load() -> None:
     assert config.vae.compile_dynamic is False
 
 
-def test_memory_candidate_uses_weight_only_conditioner() -> None:
-    config = RuntimeConfig.from_toml(Path("profiles/bean-memory-candidate.toml"))
+def test_bean_profile_uses_memory_optimized_conditioner() -> None:
+    config = RuntimeConfig.from_toml(Path("profiles/bean.toml"))
     assert config.conditioner.dtype == "fp32"
     assert config.conditioner.quantization == "int8-weight-only"
     assert config.generator.quantization == "int8"
