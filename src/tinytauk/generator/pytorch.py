@@ -28,11 +28,10 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 
 
 class PyTorchAuKGenerator:
-    """Standalone AuK-Flash Flux2Edit + four-step CPU sampler.
+    """AuK-Flash Flux2Edit transformer and four-step sampler.
 
-    The current baseline supports instruction-only, batch-one generation.
-    Reference-audio/editing support is added after the text-only CPU path is
-    qualified end to end.
+    Text/instruction generation is supported for batch size one. Reference-audio
+    generation is reserved by the public request type but is not implemented here.
     """
 
     def __init__(
@@ -43,9 +42,9 @@ class PyTorchAuKGenerator:
         model_snapshot: str | Path | None = None,
     ) -> None:
         if config.quantization not in {"none", "int8"}:
-            raise ValueError("PyTorch AuK generator currently supports only none or int8 quantization")
+            raise ValueError("PyTorch AuK generator supports only none or int8 quantization")
         if config.compile:
-            raise ValueError("PyTorch AuK generator compilation is not qualified yet")
+            raise ValueError("PyTorch AuK generator compilation is not supported")
 
         self.model_config = model
         self.config = config
@@ -72,7 +71,7 @@ class PyTorchAuKGenerator:
         raw_config = OmegaConf.load(config_path)
         model_config = raw_config.model
         if str(model_config.get("name", "")) != "AuK-Flash":
-            raise ValueError("PyTorchAuKGenerator currently supports only AuK-Flash")
+            raise ValueError("PyTorchAuKGenerator supports only AuK-Flash")
 
         vae_config = model_config.vae
         self.target_sample_rate = int(vae_config.target_sample_rate)
@@ -89,7 +88,7 @@ class PyTorchAuKGenerator:
 
         if config.quantization == "int8":
             if self.device.type != "cpu" or self.dtype != torch.float32:
-                raise ValueError("dynamic INT8 generator currently requires CPU FP32 input weights")
+                raise ValueError("dynamic INT8 generator requires CPU FP32 input weights")
             self.quantized_linear_names = select_dynamic_int8_linears(
                 self.transformer,
                 min_weight_elements=1_000_000,
@@ -122,7 +121,7 @@ class PyTorchAuKGenerator:
         conditioning: Conditioning,
     ) -> torch.Tensor:
         if request.reference_audio is not None:
-            raise NotImplementedError("reference-audio generation is not in the CPU baseline yet")
+            raise NotImplementedError("reference-audio generation is not implemented")
         if not isinstance(conditioning.values, torch.Tensor):
             raise TypeError("conditioning.values must be a torch.Tensor")
         if conditioning.attention_mask is not None and not isinstance(
@@ -136,9 +135,7 @@ class PyTorchAuKGenerator:
         )
         seed = request.seed if request.seed is not None else 1234
         torch.manual_seed(seed)
-        # Mirror CFMEdit.sample exactly: draw one [duration, channels] tensor,
-        # then add the batch dimension. This removes RNG-layout ambiguity from
-        # the exact FP32 parity gate.
+        # Match upstream RNG layout for exact FP32 reference parity.
         latent = torch.randn(
             (target_len, self.latent_dim),
             device=self.device,
@@ -157,9 +154,7 @@ class PyTorchAuKGenerator:
         )
         empty_ref_mask = torch.zeros((1, 0), device=self.device, dtype=torch.bool)
 
-        # FP32 preserves exact oracle parity. Lower-precision CPU baselines keep
-        # the time grid in the model dtype so Linear inputs and latent updates do
-        # not silently promote back to FP32 outside an autocast region.
+        # Keep the time grid in the model dtype to avoid unintended promotion.
         times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=self.dtype)
         for index in range(len(_FLASH_T_GRID) - 1):
             velocity = self.transformer(
