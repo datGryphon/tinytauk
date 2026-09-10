@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-git lfs install
 uv sync
-uv run pytest
+./scripts/check
 uv run tinytauk doctor
