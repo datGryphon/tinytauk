@@ -39,6 +39,24 @@ def _load_fusion_parameters(checkpoint_path: str | Path) -> tuple[torch.Tensor, 
     return weights, scale
 
 
+def _torchao_int8_weight_only_config() -> Any:
+    try:
+        from torchao.quantization import Int8WeightOnlyConfig
+        from transformers import TorchAoConfig
+    except ImportError as exc:
+        raise RuntimeError(
+            "INT8 weight-only conditioning requires the quant extra; run `uv sync --extra quant`"
+        ) from exc
+
+    # Preserve the complete audio-conditioning path at FP32. The vision tower is
+    # unused by TinyTAuK and is deleted after loading, so allowing its Linear
+    # weights to quantize while loading also avoids an unnecessary FP32 peak.
+    return TorchAoConfig(
+        quant_type=Int8WeightOnlyConfig(),
+        modules_to_not_convert=["audio_tower", "lm_head"],
+    )
+
+
 class TransformersConditioner:
     """Standalone Qwen2.5-Omni conditioner with AuK layer fusion.
 
@@ -55,20 +73,32 @@ class TransformersConditioner:
         auk_checkpoint: str | Path,
         upstream_parity: bool = False,
     ) -> None:
-        if config.quantization != "none":
-            raise ValueError("TransformersConditioner CPU baseline does not quantize yet")
+        if config.quantization not in {"none", "int8-weight-only"}:
+            raise ValueError(
+                "TransformersConditioner supports only none or int8-weight-only quantization"
+            )
+        if upstream_parity and config.quantization != "none":
+            raise ValueError("upstream parity requires an unquantized conditioner")
 
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
+        if config.quantization == "int8-weight-only" and self.device.type != "cpu":
+            raise ValueError("INT8 weight-only conditioner candidate currently targets CPU only")
 
         # Upstream AuK first loads the Thinker in BF16, then recursively promotes
         # the complete CFMEdit model to FP32. Preserve that sequence only for
         # exact oracle parity; the normal TinyTAuK path avoids the promotion.
         load_dtype = torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
+        quantization_config = (
+            _torchao_int8_weight_only_config()
+            if config.quantization == "int8-weight-only"
+            else None
+        )
         thinker: Any = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
             model.qwen_model_id,
             dtype=load_dtype,
+            quantization_config=quantization_config,
         )
         if thinker.visual is not None:
             del thinker.visual
@@ -76,7 +106,9 @@ class TransformersConditioner:
 
         if upstream_parity:
             thinker = thinker.to(torch.float32)
-        self.thinker: Any = thinker.to(self.device).eval()
+        if config.quantization == "none":
+            thinker = thinker.to(self.device)
+        self.thinker: Any = thinker.eval()
         self.thinker.requires_grad_(False)
 
         self.processor: Any = Qwen2_5OmniProcessor.from_pretrained(model.qwen_model_id)
