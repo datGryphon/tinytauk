@@ -2,6 +2,6 @@
 set -euo pipefail
 
 git lfs install
-uv sync --extra quant
+uv sync
 uv run pytest
 uv run tinytauk doctor
