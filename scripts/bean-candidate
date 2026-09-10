@@ -155,7 +155,6 @@ result_payload = {
     "vae_compile": engine.config.vae.compile,
     "vae_compile_mode": engine.config.vae.compile_mode,
     "vae_compile_dynamic": engine.config.vae.compile_dynamic,
-    "vae_prepare_seconds": float(engine.load_stage_seconds.get("vae_prepare", 0.0)),
     "load_seconds": load_seconds,
     "load_stage_seconds": engine.load_stage_seconds,
     "runs": runs,
@@ -177,7 +176,7 @@ result_payload = {
 }
 output_path = out_dir / "candidate.json"
 output_path.write_text(json.dumps(result_payload, indent=2, sort_keys=True) + "\n")
-print("\n================ BEAN CANDIDATE SUMMARY ================")
+print("\n================ BEAN BENCHMARK SUMMARY ================")
 print(json.dumps(result_payload, indent=2, sort_keys=True))
 print(f"\nWrote {output_path}")
 print(f"Wrote {out_dir / 'candidate.wav'}")
