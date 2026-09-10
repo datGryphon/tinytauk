@@ -1,8 +1,7 @@
 """Low-level AuK Flux2 transformer modules.
 
-Adapted from Tencent-Hunyuan/AuK under the MIT license. This baseline keeps
-only the PyTorch SDPA path needed for CPU parity; FlashAttention can be added
-as a separate backend later if profiling justifies it.
+Adapted from Tencent-Hunyuan/AuK under the MIT license. TinyTAuK uses the
+PyTorch SDPA path.
 """
 # mypy: ignore-errors
 
