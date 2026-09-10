@@ -25,6 +25,9 @@ class ComponentConfig:
     device: Device = "cpu"
     dtype: DType = "bf16"
     quantization: Quantization = "none"
+    compile: bool = False
+    compile_mode: str = "default"
+    compile_dynamic: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,13 @@ def _integer(table: dict[str, Any], key: str, default: int) -> int:
     return value
 
 
+def _boolean(table: dict[str, Any], key: str, default: bool) -> bool:
+    value = table.get(key, default)
+    if not isinstance(value, bool):
+        raise TypeError(f"{key} must be a boolean")
+    return value
+
+
 def _component(
     table: dict[str, Any],
     *,
@@ -73,6 +83,9 @@ def _component(
         device=_string(table, "device", "cpu"),
         dtype=cast(DType, dtype),
         quantization=cast(Quantization, quantization),
+        compile=_boolean(table, "compile", False),
+        compile_mode=_string(table, "compile_mode", "default"),
+        compile_dynamic=_boolean(table, "compile_dynamic", True),
     )
 
 
