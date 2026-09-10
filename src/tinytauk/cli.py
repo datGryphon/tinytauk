@@ -7,8 +7,9 @@ import wave
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
+import torch
+
 from . import __version__
-from .benchmark import dry_run_result
 from .config import RuntimeConfig
 from .engine import TinyTAuK
 
@@ -26,18 +27,11 @@ def _doctor() -> int:
         "python": platform.python_version(),
         "platform": platform.platform(),
         "machine": platform.machine(),
+        "torch": torch.__version__,
+        "torch_threads": torch.get_num_threads(),
         "torchao": _optional_package_version("torchao"),
+        "cuda_available": torch.cuda.is_available(),
     }
-
-    try:
-        import torch
-
-        report["torch"] = torch.__version__
-        report["torch_threads"] = torch.get_num_threads()
-        report["cuda_available"] = torch.cuda.is_available()
-    except ImportError:
-        report["torch"] = None
-
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 
@@ -47,19 +41,7 @@ def _show_config(path: Path) -> int:
     return 0
 
 
-def _benchmark(profile: Path, target_seconds: float, dry_run: bool) -> int:
-    _ = RuntimeConfig.from_toml(profile)
-    if not dry_run:
-        raise SystemExit("Full runtime benchmarks are provided by the scripts/ benchmark helpers.")
-    print(dry_run_result(str(profile), target_seconds).to_json())
-    return 0
-
-
-def _write_pcm16(path: Path, audio: object, sample_rate: int) -> None:
-    import torch
-
-    if not isinstance(audio, torch.Tensor):
-        raise TypeError("audio must be a torch.Tensor")
+def _write_pcm16(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
     samples = audio.squeeze(0).detach().cpu().to(torch.float32).clamp(-1.0, 1.0)
     pcm = (samples * 32767.0).round().to(torch.int16).contiguous().numpy().astype("<i2", copy=False)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -112,11 +94,6 @@ def build_parser() -> argparse.ArgumentParser:
     config = sub.add_parser("config", help="Resolve and print a runtime profile")
     config.add_argument("path", type=Path)
 
-    benchmark = sub.add_parser("benchmark", help="Validate the benchmark result schema")
-    benchmark.add_argument("--profile", type=Path, default=Path("profiles/bean.toml"))
-    benchmark.add_argument("--target-seconds", type=float, default=10.0)
-    benchmark.add_argument("--dry-run", action="store_true")
-
     generate = sub.add_parser("generate", help="Generate speech with AuK-Flash")
     generate.add_argument("instruction")
     generate.add_argument("--profile", type=Path, default=Path("profiles/bean.toml"))
@@ -135,8 +112,6 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor()
     if args.command == "config":
         return _show_config(args.path)
-    if args.command == "benchmark":
-        return _benchmark(args.profile, args.target_seconds, args.dry_run)
     if args.command == "generate":
         return _generate(
             args.profile,
