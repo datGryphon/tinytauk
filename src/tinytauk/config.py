@@ -99,11 +99,7 @@ class RuntimeConfig:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> RuntimeConfig:
-        if isinstance(path, Path):
-            source = path
-        else:
-            source = Path(path)
-        with source.open("rb") as handle:
+        with Path(path).open("rb") as handle:
             return cls.from_dict(tomllib.load(handle))
 
     @classmethod
