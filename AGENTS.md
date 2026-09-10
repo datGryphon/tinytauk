@@ -2,38 +2,44 @@
 
 ## Project purpose
 
-TinyTAuK is a standalone, memory-efficient AuK-Flash inference engine intended to be qualified on Bean before integration into TinyTalk.
+TinyTAuK is a standalone, memory-efficient AuK-Flash inference runtime. The library owns model loading and waveform generation; higher-level systems own serving, request queues, transcript validation, retries, chunking, stitching, and dialogue orchestration.
 
-## Hard architectural constraints
+## Architectural constraints
 
-- Keep the production runtime Python/PyTorch-first until profiling proves another backend is necessary.
-- Treat official AuK as a reference oracle, not a production dependency.
-- Preserve compatibility with official AuK-Flash checkpoints/configuration rather than upstream Python APIs.
-- Keep Qwen conditioner, AuK generator, and VAE device/dtype/quantization ownership independent.
-- Do not recursively `.to()` the whole composite model.
-- Avoid materializing the complete Qwen hidden-state stack if mathematically equivalent streaming layer fusion can be implemented.
-- Quantize based on measured quality/runtime/memory results, not ideology. INT4 is a candidate, not a requirement.
-- Do not implement GGUF/Vulkan until CPU qualification on Bean shows it is necessary.
-- If CPU fails on Bean, profile first and accelerate the dominant component only.
-- Do not add TinyTalk, Hermes, HTTP service, speaker-scene orchestration, or audio stitching before Bean runtime qualification.
-- Do not vendor or fork large upstream frameworks when a small compatible implementation is sufficient.
-- Keep model downloads and generated benchmark audio out of git.
+- Use official AuK/AuK-Flash checkpoints and configuration as the artifact format.
+- Treat the upstream AuK repository as a reference oracle, not a production dependency.
+- Keep Qwen conditioning, Flux2 generation, and VAE decode independently configurable by backend, device, dtype, and quantization policy.
+- Do not recursively cast or move the complete model stack.
+- Preserve Qwen's audio-conditioning path even when optimizing text-only inference.
+- Keep Python/PyTorch as the default implementation until measurements justify another backend.
+- Do not add GGUF, Vulkan, ROCm, or custom C++ paths without a measured bottleneck and a concrete deployment need.
+- Do not add TinyTalk, Hermes, HTTP serving, scene orchestration, or audio stitching to this repository.
 
-## Development gates
+## Supported runtime
 
-1. Neptune bootstrap is reproducible.
-2. Upstream AuK-Flash reference outputs are captured.
-3. Unquantized TinyTAuK matches reference behavior.
-4. Qwen layer-fusion memory path is improved without changing results.
-5. CPU quantization profiles are benchmarked on Neptune.
-6. One CPU candidate is frozen.
-7. Exact candidate is benchmarked on Bean.
-8. Only if Bean fails: evaluate targeted GGUF/Vulkan/other acceleration.
-9. Only after Bean passes: define the TinyTalk backend contract.
+`profiles/bean.toml` is the current CPU deployment profile. It uses Qwen INT8 weight-only text-transformer weights, dynamic INT8 for selected Flux2 Linear layers, and an FP32 Inductor-compiled VAE.
+
+Text/instruction generation is supported. The public API reserves `reference_audio`, but reference-audio Flux2 generation is not implemented yet and must fail explicitly rather than silently falling back to text-only behavior.
 
 ## Code quality
 
-- Prefer typed dataclasses and small protocols over framework-heavy abstractions.
-- Keep imports of heavyweight ML libraries lazy where practical so config/CLI tooling stays cheap.
-- Every optimization must have a benchmark or parity test demonstrating why it exists.
-- Do not hide unsupported behavior behind fallbacks. Fail explicitly.
+- Prefer typed dataclasses and small interfaces over framework-heavy abstractions.
+- Keep heavyweight imports lazy where practical so configuration and diagnostics remain cheap.
+- Preserve non-obvious comments that explain numerical parity, checkpoint compatibility, or backend constraints.
+- Do not keep comments that merely narrate development history or a previous experiment.
+- Every optimization must have a benchmark or parity/quality test demonstrating why it exists.
+- Unsupported behavior should fail explicitly.
+
+## Checks
+
+Run:
+
+```bash
+./scripts/check
+```
+
+For Bean qualification:
+
+```bash
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/bean-bench
+```
