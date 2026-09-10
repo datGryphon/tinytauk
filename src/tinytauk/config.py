@@ -28,7 +28,6 @@ class ComponentConfig:
     compile: bool = False
     compile_mode: str = "default"
     compile_dynamic: bool = True
-    compile_warmup_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,13 +57,6 @@ def _integer(table: dict[str, Any], key: str, default: int) -> int:
     return value
 
 
-def _number(table: dict[str, Any], key: str, default: float) -> float:
-    value = table.get(key, default)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise TypeError(f"{key} must be a number")
-    return float(value)
-
-
 def _boolean(table: dict[str, Any], key: str, default: bool) -> bool:
     value = table.get(key, default)
     if not isinstance(value, bool):
@@ -86,10 +78,6 @@ def _component(
     if quantization not in _VALID_QUANTIZATION:
         raise ValueError(f"unsupported quantization: {quantization}")
 
-    compile_warmup_seconds = _number(table, "compile_warmup_seconds", 0.0)
-    if compile_warmup_seconds < 0:
-        raise ValueError("compile_warmup_seconds must be non-negative")
-
     return ComponentConfig(
         backend=_string(table, "backend", default_backend),
         device=_string(table, "device", "cpu"),
@@ -98,7 +86,6 @@ def _component(
         compile=_boolean(table, "compile", False),
         compile_mode=_string(table, "compile_mode", "default"),
         compile_dynamic=_boolean(table, "compile_dynamic", True),
-        compile_warmup_seconds=compile_warmup_seconds,
     )
 
 
@@ -112,7 +99,11 @@ class RuntimeConfig:
 
     @classmethod
     def from_toml(cls, path: str | Path) -> RuntimeConfig:
-        with Path(path).open("rb") as handle:
+        if isinstance(path, Path):
+            source = path
+        else:
+            source = Path(path)
+        with source.open("rb") as handle:
             return cls.from_dict(tomllib.load(handle))
 
     @classmethod
