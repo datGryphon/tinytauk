@@ -1,143 +1,75 @@
-# TinyTAuK implementation plan
+# TinyTAuK roadmap
 
-## Goal
+## Current state
 
-Build a standalone, memory-efficient Python/PyTorch implementation of AuK-Flash inference, optimize it first for CPU execution, qualify it on Bean, and only then integrate it into TinyTalk.
-
-## Environment flow
-
-1. **Neptune:** repository setup, correctness, parity, profiling, quantization experiments.
-2. **Bean:** target runtime/memory qualification using the exact same repository and lock files.
-3. **TinyTalk/Hermes:** integration only after Bean passes.
-
-## Phase 0 — Bootstrap
-
-- Local Nix flake supplies Python 3.10, uv, ffmpeg, libsndfile, compiler tooling and git-lfs.
-- uv owns the Python ML dependency graph.
-- Establish lint/test/benchmark scaffolding.
-
-**Gate:** fresh clone on Neptune can enter `nix develop`, `uv sync`, and pass tests.
-
-## Phase 1 — Upstream reference oracle
-
-Run official AuK-Flash only as a development oracle. Capture a deterministic reference corpus and, where practical, intermediate tensors:
-
-- Qwen conditioning output,
-- AuK learned layer-fusion output,
-- final diffusion latent,
-- decoded waveform,
-- runtime and peak RSS.
-
-Do not make upstream `auk` a production dependency.
-
-**Gate:** reproducible reference artifacts exist.
-
-## Phase 2 — Unquantized TinyTAuK parity
-
-Implement the minimum checkpoint-compatible inference stack:
+TinyTAuK implements standalone AuK-Flash text/instruction inference using official checkpoints:
 
 ```text
-instruction/reference audio
+instruction
         -> Qwen2.5-Omni Thinker
-        -> AuK learned layer fusion
-        -> Flux2Edit
-        -> AuK-Flash four-step sampler
-        -> BigVGANFlowVAE
+        -> AuK learned hidden-state fusion
+        -> Flux2Edit four-step sampler
+        -> BigVGAN decoder
         -> waveform
 ```
 
-Each component independently owns device and dtype. Do not recursively move/cast the composite model.
+The FP32 implementation has been checked against a pinned upstream AuK oracle. CPU profiling and quality measurements produced the current low-memory deployment profile in `profiles/bean.toml`.
 
-**Gate:** TinyTAuK unquantized output is functionally equivalent to upstream AuK-Flash.
+The supported Python API is deliberately small: `RuntimeConfig`, `TinyTAuK.from_config()`, and `TinyTAuK.generate()`.
 
-## Phase 3 — Qwen conditioning memory
+## Current deployment profile
 
-Replace upstream-style retention/stacking of every Qwen hidden state with an equivalent streaming accumulation of the AuK layer-normalized learned weighted sum.
+`profiles/bean.toml` uses:
 
-Prefer forward hooks or a minimal block wrapper before maintaining a custom Qwen implementation.
+- Qwen text-transformer Linear weights: INT8 weight-only;
+- Qwen audio tower: FP32 and retained;
+- Flux2 large non-sensitive Linear layers: dynamic INT8;
+- Flux2 sensitive paths: FP32;
+- VAE: FP32 with `torch.compile`/Inductor;
+- four CPU intra-op threads.
 
-Measure conditioning error, peak RSS, and runtime.
+The first VAE decode for a new Inductor graph can be much slower than subsequent calls. Service processes should warm the complete `TinyTAuK.generate()` path at their normal serving duration rather than trying to precompile the VAE in isolation.
 
-**Gate:** equivalent conditioning with improved or neutral memory/runtime.
+## Near-term work
 
-## Phase 4 — CPU quantization on Neptune
+### TinyTalk integration
 
-Benchmark components independently. Candidate progression:
+Add a TinyTalk backend that keeps one TinyTAuK engine resident and translates TinyTalk speaker/delivery instructions into AuK instruction text. TinyTalk remains responsible for HTTP serving, request queues, transcript validation, retries, chunking, stitching, and output encoding.
 
-1. BF16/FP32 baseline
-2. INT8 weight-only
-3. INT4 weight-only
-4. INT8 activation + INT4 weight where supported/useful
-5. mixed module policy
+### Reference-audio generation
 
-Start with large Linear tensors. Keep norms, small/sensitive tensors, and initially the VAE at higher precision.
+The conditioner already retains the Qwen audio tower and the public request type reserves `reference_audio`. The Flux2 generation path still needs the corresponding reference-latent/audio-conditioning implementation.
 
-Benchmark 5/10/15/20-second targets and record:
+Acceptance criteria should include:
 
-- startup/load time,
-- conditioning time,
-- four-step generation time,
-- VAE decode time,
-- total wall time and RTF,
-- peak RSS,
-- output quality.
+- speaker/timbre consistency;
+- intelligibility and transcript accuracy;
+- prosody/style preservation;
+- memory and latency impact relative to text-only inference.
 
-Quality evaluation must include intelligibility, speaker similarity, pronunciation, prosody/emotion, artifacts and stability.
+### Quality validation
 
-**Gate:** at least one materially smaller stable CPU profile without unacceptable quality loss.
+Continue using the corpus and scorer under `benchmarks/quality/` as a regression suite. Transcript validation must use proper Levenshtein WER/CER rather than heuristics that undercount insertions or repeated phrases.
 
-## Phase 5 — Freeze Neptune CPU candidate
+## Conditional future work
 
-Version one candidate runtime profile and make benchmark results machine-readable JSON.
+Only pursue these when deployment measurements justify them:
 
-At this point Neptune should no longer be answering correctness questions; the remaining deployment question belongs to Bean.
+- streaming or lower-memory Qwen hidden-state fusion;
+- audio-tower weight-only quantization after reference-audio quality can be measured;
+- alternate VAE runtimes;
+- Vulkan/ggml acceleration;
+- GPU deployment and coordinated model residency with other inference services.
 
-## Phase 6 — Bean qualification
+## Non-goals
 
-Clone the same repository on Bean and use the same lock files. Do not introduce Bean-specific code before baseline measurement.
+TinyTAuK does not own:
 
-Run the exact Neptune benchmark corpus. Measure repeated warm requests as well as first request behavior, memory growth and thermal throttling.
+- HTTP or RPC serving;
+- dialogue or scene planning;
+- speaker turn orchestration;
+- transcript correction/retry policy;
+- pause/crossfade/stitching logic;
+- application-specific integration with Hermes or other agents.
 
-Normal TinyTalk speaker turns are expected to be roughly 5–15 seconds.
-
-Target: return a normal turn in **under 8 minutes**, leaving margin inside Hermes's 10-minute HTTP timeout.
-
-If CPU passes: stop backend optimization and proceed to TinyTalk integration.
-
-If CPU fails: profile first.
-
-## Phase 7 — Conditional acceleration only if Bean fails
-
-- **Qwen dominates:** investigate existing Qwen2.5-Omni GGUF + llama.cpp/Vulkan behind a `ConditioningBackend`, including the AuK intermediate-layer fusion requirement.
-- **AuK transformer dominates:** investigate an optional ggml/Vulkan generator backend, using mature diffusion/ggml implementations as references.
-- **VAE dominates:** optimize the VAE independently.
-
-Do not port the complete project to C++ preemptively.
-
-## Phase 8 — Runtime contract freeze
-
-Declare one supported Bean production profile and stabilize the Python API consumed by TinyTalk. Internal PyTorch/AuK implementation details must not leak through this interface.
-
-## Phase 9 — TinyTalk integration
-
-Add `TinyTAuKBackend` beside NeuTTS. Initially expose only:
-
-- zero-shot TTS,
-- instruct TTS,
-- expressive per-speaker-turn rendering.
-
-TinyTalk continues to own HTTP, scene/turn planning, normalization, pauses/crossfades, stitching and output encoding.
-
-## Phase 10 — Hermes integration
-
-Hermes should provide semantic delivery intent rather than AuK-specific prompt syntax. TinyTalk translates a stable speaker/delivery schema into TinyTAuK instructions.
-
-## Non-negotiable decisions
-
-- Official checkpoints are the artifact format.
-- Upstream AuK is a reference oracle, not a runtime dependency.
-- Python/PyTorch remains default until measurements force another backend.
-- GGUF/Vulkan is an optional optimization path, not the design center.
-- No Bean-specific fork.
-- No TinyTalk/Hermes integration before Bean qualification.
-- Every optimization requires parity/quality and runtime/memory evidence.
+Those concerns belong to the calling application.
