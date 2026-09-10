@@ -130,6 +130,25 @@ class Flux2Edit(nn.Module):
             context = torch.zeros_like(context)
         return context
 
+    def _project_text_cached(
+        self,
+        text: torch.Tensor,
+        *,
+        drop_text: bool,
+        cache: bool,
+    ) -> torch.Tensor:
+        cached = self.text_uncond if drop_text else self.text_cond
+        if cache and cached is not None:
+            return cached
+
+        context = self.project_text(text, drop_text=drop_text)
+        if cache:
+            if drop_text:
+                self.text_uncond = context
+            else:
+                self.text_cond = context
+        return context
+
     def clear_cache(self) -> None:
         self.text_cond = None
         self.text_uncond = None
@@ -190,12 +209,7 @@ class Flux2Edit(nn.Module):
             c_mask = text.abs().sum(-1) > 0
 
         if cfg_infer:
-            if cache and self.text_cond is not None:
-                c_cond = self.text_cond
-            else:
-                c_cond = self.project_text(text)
-                if cache:
-                    self.text_cond = c_cond
+            c_cond = self._project_text_cached(text, drop_text=False, cache=cache)
             x_cond, mask_cond, prompt_len = self._embed_audio(
                 x,
                 ref,
@@ -203,12 +217,7 @@ class Flux2Edit(nn.Module):
                 mask=mask,
                 ref_mask=ref_mask,
             )
-            if cache and self.text_uncond is not None:
-                c_uncond = self.text_uncond
-            else:
-                c_uncond = self.project_text(text, drop_text=True)
-                if cache:
-                    self.text_uncond = c_uncond
+            c_uncond = self._project_text_cached(text, drop_text=True, cache=cache)
             x_uncond, mask_uncond, _ = self._embed_audio(
                 x,
                 ref,
@@ -225,7 +234,7 @@ class Flux2Edit(nn.Module):
                 audio_mask = None
             c_mask = torch.cat((c_mask, c_mask), dim=0)
         else:
-            context = self.project_text(text, drop_text=drop_text)
+            context = self._project_text_cached(text, drop_text=drop_text, cache=cache)
             x, audio_mask, prompt_len = self._embed_audio(
                 x,
                 ref,
