@@ -22,6 +22,7 @@ quantization = "none"
 compile = true
 compile_mode = "default"
 compile_dynamic = true
+compile_warmup_seconds = 9.0
 
 [runtime]
 seed = 1234
