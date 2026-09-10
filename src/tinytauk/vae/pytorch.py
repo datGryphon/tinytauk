@@ -23,7 +23,7 @@ class _DecodeGraph(nn.Module):
         value = latents.float()
         value = self.decoder.denormalize(value)
         value = value.permute(0, 2, 1)
-        return self.decoder(value)
+        return cast(torch.Tensor, self.decoder(value))
 
 
 class PyTorchVAE:
