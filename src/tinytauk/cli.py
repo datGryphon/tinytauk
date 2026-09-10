@@ -53,17 +53,15 @@ def _write_pcm16(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
 
 
 def _generate(
-    profile: Path,
+    profile: Path | None,
     instruction: str,
     output: Path,
-    reference_audio: Path | None,
     seconds: float,
     seed: int | None,
 ) -> int:
-    engine = TinyTAuK.from_config(profile)
+    engine = TinyTAuK.from_config(profile) if profile is not None else TinyTAuK.from_pretrained()
     result = engine.generate(
         instruction,
-        reference_audio=reference_audio,
         gen_seconds=seconds,
         seed=seed,
     )
@@ -96,9 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     generate = sub.add_parser("generate", help="Generate speech with AuK-Flash")
     generate.add_argument("instruction")
-    generate.add_argument("--profile", type=Path, default=Path("profiles/cpu.toml"))
+    generate.add_argument("--profile", type=Path)
     generate.add_argument("--output", type=Path, default=Path("output.wav"))
-    generate.add_argument("--reference-audio", type=Path)
     generate.add_argument("--seconds", type=float, default=10.0)
     generate.add_argument("--seed", type=int)
 
@@ -117,7 +114,6 @@ def main(argv: list[str] | None = None) -> int:
             args.profile,
             args.instruction,
             args.output,
-            args.reference_audio,
             args.seconds,
             args.seed,
         )
