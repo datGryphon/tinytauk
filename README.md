@@ -32,7 +32,7 @@ uv sync --extra quant
 
 ```bash
 uv run --extra quant tinytauk generate \
-  --profile profiles/bean.toml \
+  --profile profiles/cpu.toml \
   --seconds 9 \
   --output output.wav \
   'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully.".'
@@ -48,7 +48,7 @@ The VAE compiles lazily on first use. Long-running callers should keep one
 ```python
 from tinytauk import TinyTAuK
 
-engine = TinyTAuK.from_config("profiles/bean.toml")
+engine = TinyTAuK.from_config("profiles/cpu.toml")
 result = engine.generate(
     'Generate speech based on the following description: "A calm, natural technical narration". '
     'The content to speak is: "The service restarted successfully.".',
@@ -59,9 +59,9 @@ result = engine.generate(
 `result.audio` is a CPU `torch.Tensor`; `sample_rate`, `generated_seconds`, and
 per-stage timings are also returned.
 
-## Bean profile
+## CPU profile
 
-`profiles/bean.toml` is the current CPU deployment profile:
+`profiles/cpu.toml` is the current low-memory CPU profile:
 
 | Component | Runtime |
 | --- | --- |
@@ -74,7 +74,7 @@ per-stage timings are also returned.
 Benchmark it with:
 
 ```bash
-OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/bean-bench
+OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
 
 See `docs/CPU_BASELINE.md` for the measurements behind this profile and
