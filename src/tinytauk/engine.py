@@ -97,7 +97,9 @@ class TinyTAuK:
         device: str = "cpu",
     ) -> TinyTAuK:
         if device != "cpu":
-            raise ValueError("from_pretrained currently supports only CPU; use from_config for custom runtimes")
+            raise ValueError(
+                "from_pretrained currently supports only CPU; use from_config for custom runtimes"
+            )
         raw = {
             "model": {"model_id": model_id, "qwen_model_id": qwen_model_id},
             "conditioner": {
