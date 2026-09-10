@@ -1,8 +1,8 @@
 """Decoder-only BigVGAN path used by AuK's VAE.
 
-Adapted from Tencent-Hunyuan/AuK's BigVGANFlowVAE decoder path. The encoder
-and flow modules are intentionally omitted because TinyTAuK's instruction-only
-baseline only needs latent denormalization + waveform decoding.
+Adapted from Tencent-Hunyuan/AuK's BigVGANFlowVAE decoder. The alias-free
+activation/resampling code is a modified adaptation of alias-free-torch under
+Apache-2.0. See THIRD_PARTY.md.
 """
 # mypy: ignore-errors
 
