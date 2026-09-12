@@ -235,9 +235,7 @@ class TinyTAuK:
 
         self._validate_seconds(gen_seconds)
         if seed is None:
-            resolved_seed = (
-                conditioning.seed if conditioning.seed is not None else self.config.runtime.seed
-            )
+            resolved_seed = conditioning.seed if conditioning.seed is not None else self.config.runtime.seed
         else:
             resolved_seed = seed
         with self._generate_lock:

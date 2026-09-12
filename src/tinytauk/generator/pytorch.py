@@ -121,8 +121,7 @@ class PyTorchAuKGenerator:
         reference = conditioning.reference_latents.to(device=self.device, dtype=self.dtype)
         if reference.ndim != 3 or reference.shape[0] != 1 or reference.shape[-1] != self.latent_dim:
             raise ValueError(
-                "reference_latents must have shape [1, T, "
-                f"{self.latent_dim}], got {tuple(reference.shape)}"
+                f"reference_latents must have shape [1, T, {self.latent_dim}], got {tuple(reference.shape)}"
             )
         lengths = conditioning.reference_lengths.to(device=self.device, dtype=torch.long)
         if lengths.shape != (1,):
