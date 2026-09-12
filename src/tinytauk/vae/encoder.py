@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, fields
-from typing import Any, cast
+from typing import Any
 
 import torch
 from torch import nn
@@ -28,6 +28,20 @@ class BigVGANEncoderConfig:
         return cls(**{key: value for key, value in raw.items() if key in valid})
 
 
+def _tensor_call(module: nn.Module, value: torch.Tensor) -> torch.Tensor:
+    result = module(value)
+    if not isinstance(result, torch.Tensor):
+        raise TypeError(f"{module.__class__.__name__} returned a non-tensor value")
+    return result
+
+
+class _TensorSequential(nn.Sequential):
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        for module in self:
+            value = _tensor_call(module, value)
+        return value
+
+
 class _Conv1dS(nn.Module):
     def __init__(
         self,
@@ -39,19 +53,18 @@ class _Conv1dS(nn.Module):
     ) -> None:
         super().__init__()
         padding = dilation * (kernel_size - 1) // 2
-        self.layer = weight_norm(
-            nn.Conv1d(
-                in_channels,
-                out_channels,
-                kernel_size=kernel_size,
-                stride=stride,
-                padding=padding,
-                dilation=dilation,
-            )
+        self.layer = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
         )
+        weight_norm(self.layer)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.layer(inputs))
+        return self.layer(inputs)
 
 
 class _ResStack(nn.Module):
@@ -65,27 +78,15 @@ class _ResStack(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList(
             [
-                nn.Sequential(
+                _TensorSequential(
                     nn.LeakyReLU(),
-                    weight_norm(
-                        nn.Conv1d(
-                            channels,
-                            channels,
-                            kernel_size=kernel_size,
-                            dilation=dilation_base**index,
-                            padding=dilation_base**index,
-                        )
+                    _weight_norm_conv(
+                        channels,
+                        kernel_size=kernel_size,
+                        dilation=dilation_base**index,
                     ),
                     nn.LeakyReLU(),
-                    weight_norm(
-                        nn.Conv1d(
-                            channels,
-                            channels,
-                            kernel_size=kernel_size,
-                            dilation=1,
-                            padding=1,
-                        )
-                    ),
+                    _weight_norm_conv(channels, kernel_size=kernel_size, dilation=1),
                 )
                 for index in range(count)
             ]
@@ -93,8 +94,20 @@ class _ResStack(nn.Module):
 
     def forward(self, value: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
-            value = value + layer(value)
+            value = value + _tensor_call(layer, value)
         return value
+
+
+def _weight_norm_conv(channels: int, *, kernel_size: int, dilation: int) -> nn.Conv1d:
+    layer = nn.Conv1d(
+        channels,
+        channels,
+        kernel_size=kernel_size,
+        dilation=dilation,
+        padding=dilation,
+    )
+    weight_norm(layer)
+    return layer
 
 
 class _Encoder(nn.Module):
@@ -129,10 +142,10 @@ class _Encoder(nn.Module):
                 ]
             )
         layers.append(_Conv1dS(channels[-1], out_channels, kernel_size=3, stride=1))
-        self.generator = nn.Sequential(*layers)
+        self.generator = _TensorSequential(*layers)
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        return cast(torch.Tensor, self.generator(audio))
+        return self.generator(audio)
 
 
 class BigVGANEncoder(nn.Module):
@@ -178,9 +191,9 @@ class BigVGANEncoder(nn.Module):
             )
         latents = mean + noise * torch.exp(log_std)
         latents = latents.transpose(1, 2).float()
-        global_mean = cast(torch.Tensor, self.global_mean)
-        global_log_std = cast(torch.Tensor, self.global_log_std)
-        latents = (latents - global_mean.float()) / torch.sqrt(global_log_std.float())
+        global_mean = self.get_buffer("global_mean").float()
+        global_log_std = self.get_buffer("global_log_std").float()
+        latents = (latents - global_mean) / torch.sqrt(global_log_std)
         latent_lengths = sample_lengths // self.hop_size
         latent_lengths = torch.clamp(latent_lengths, max=latents.shape[1])
         return latents, latent_lengths

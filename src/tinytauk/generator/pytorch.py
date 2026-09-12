@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import torch
 from huggingface_hub import snapshot_download
@@ -25,6 +25,19 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
     "bf16": torch.bfloat16,
     "fp32": torch.float32,
 }
+
+
+def _resolved_arch(raw: Any) -> dict[str, Any]:
+    resolved = OmegaConf.to_container(raw, resolve=True)
+    if not isinstance(resolved, dict):
+        raise TypeError("AuK model.arch must resolve to a mapping")
+
+    arch: dict[str, Any] = {}
+    for key, value in resolved.items():
+        if not isinstance(key, str):
+            raise TypeError("AuK model.arch keys must be strings")
+        arch[key] = value
+    return arch
 
 
 class PyTorchAuKGenerator:
@@ -72,7 +85,7 @@ class PyTorchAuKGenerator:
         self.downsample_rate = int(vae_config.downsample_rate)
         self.latent_dim = int(vae_config.latent_dim)
 
-        arch = cast(dict[str, Any], OmegaConf.to_container(model_config.arch, resolve=True))
+        arch = _resolved_arch(model_config.arch)
         arch["attn_backend"] = "torch"
         arch["checkpoint_activations"] = False
         self.transformer = Flux2Edit(**arch, latent_dim=self.latent_dim)
@@ -106,24 +119,23 @@ class PyTorchAuKGenerator:
             )
 
     def _reference_inputs(self, conditioning: Conditioning) -> tuple[torch.Tensor, torch.Tensor]:
-        if conditioning.reference_latents is None:
+        reference_latents = conditioning.reference_latents
+        if reference_latents is None:
             return (
                 torch.zeros((1, 0, self.latent_dim), device=self.device, dtype=self.dtype),
                 torch.zeros((1, 0), device=self.device, dtype=torch.bool),
             )
-        if not isinstance(conditioning.reference_latents, torch.Tensor):
-            raise TypeError("conditioning.reference_latents must be a torch.Tensor")
-        if conditioning.reference_lengths is None or not isinstance(
-            conditioning.reference_lengths, torch.Tensor
-        ):
-            raise TypeError("reference conditioning requires tensor reference_lengths")
 
-        reference = conditioning.reference_latents.to(device=self.device, dtype=self.dtype)
+        reference_lengths = conditioning.reference_lengths
+        if reference_lengths is None:
+            raise ValueError("reference conditioning is missing reference_lengths")
+
+        reference = reference_latents.to(device=self.device, dtype=self.dtype)
         if reference.ndim != 3 or reference.shape[0] != 1 or reference.shape[-1] != self.latent_dim:
             raise ValueError(
                 f"reference_latents must have shape [1, T, {self.latent_dim}], got {tuple(reference.shape)}"
             )
-        lengths = conditioning.reference_lengths.to(device=self.device, dtype=torch.long)
+        lengths = reference_lengths.to(device=self.device, dtype=torch.long)
         if lengths.shape != (1,):
             raise ValueError(f"reference_lengths must have shape [1], got {tuple(lengths.shape)}")
         if int(lengths[0]) < 0 or int(lengths[0]) > reference.shape[1]:
@@ -137,13 +149,6 @@ class PyTorchAuKGenerator:
         request: GenerationRequest,
         conditioning: Conditioning,
     ) -> torch.Tensor:
-        if not isinstance(conditioning.values, torch.Tensor):
-            raise TypeError("conditioning.values must be a torch.Tensor")
-        if conditioning.attention_mask is not None and not isinstance(
-            conditioning.attention_mask, torch.Tensor
-        ):
-            raise TypeError("conditioning.attention_mask must be a torch.Tensor")
-
         target_len = max(
             1,
             int(math.ceil(request.gen_seconds * self.target_sample_rate / self.downsample_rate)),
