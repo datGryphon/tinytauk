@@ -28,11 +28,7 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 
 
 class PyTorchAuKGenerator:
-    """AuK-Flash Flux2Edit transformer and four-step sampler.
-
-    Text/instruction generation is supported for batch size one. Reference-audio
-    generation is reserved by the public request type but is not implemented here.
-    """
+    """AuK-Flash Flux2Edit transformer and four-step sampler."""
 
     def __init__(
         self,
@@ -109,14 +105,39 @@ class PyTorchAuKGenerator:
                 f"Flux2Edit checkpoint mismatch: missing={missing[:10]} unexpected={unexpected[:10]}"
             )
 
+    def _reference_inputs(self, conditioning: Conditioning) -> tuple[torch.Tensor, torch.Tensor]:
+        if conditioning.reference_latents is None:
+            return (
+                torch.zeros((1, 0, self.latent_dim), device=self.device, dtype=self.dtype),
+                torch.zeros((1, 0), device=self.device, dtype=torch.bool),
+            )
+        if not isinstance(conditioning.reference_latents, torch.Tensor):
+            raise TypeError("conditioning.reference_latents must be a torch.Tensor")
+        if conditioning.reference_lengths is None or not isinstance(
+            conditioning.reference_lengths, torch.Tensor
+        ):
+            raise TypeError("reference conditioning requires tensor reference_lengths")
+
+        reference = conditioning.reference_latents.to(device=self.device, dtype=self.dtype)
+        if reference.ndim != 3 or reference.shape[0] != 1 or reference.shape[-1] != self.latent_dim:
+            raise ValueError(
+                "reference_latents must have shape [1, T, "
+                f"{self.latent_dim}], got {tuple(reference.shape)}"
+            )
+        lengths = conditioning.reference_lengths.to(device=self.device, dtype=torch.long)
+        if lengths.shape != (1,):
+            raise ValueError(f"reference_lengths must have shape [1], got {tuple(lengths.shape)}")
+        if int(lengths[0]) < 0 or int(lengths[0]) > reference.shape[1]:
+            raise ValueError("reference_lengths is outside the reference latent sequence")
+        positions = torch.arange(reference.shape[1], device=self.device).unsqueeze(0)
+        return reference, positions < lengths.unsqueeze(1)
+
     @torch.inference_mode()
     def generate_latents(
         self,
         request: GenerationRequest,
         conditioning: Conditioning,
     ) -> torch.Tensor:
-        if request.reference_audio is not None:
-            raise NotImplementedError("reference-audio generation is not implemented")
         if not isinstance(conditioning.values, torch.Tensor):
             raise TypeError("conditioning.values must be a torch.Tensor")
         if conditioning.attention_mask is not None and not isinstance(
@@ -141,12 +162,7 @@ class PyTorchAuKGenerator:
         context_mask = (
             conditioning.attention_mask.to(self.device) if conditioning.attention_mask is not None else None
         )
-        empty_ref = torch.zeros(
-            (1, 0, self.latent_dim),
-            device=self.device,
-            dtype=self.dtype,
-        )
-        empty_ref_mask = torch.zeros((1, 0), device=self.device, dtype=torch.bool)
+        reference, reference_mask = self._reference_inputs(conditioning)
 
         times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=self.dtype)
         try:
@@ -157,8 +173,8 @@ class PyTorchAuKGenerator:
                     time=times[index],
                     mask=None,
                     c_mask=context_mask,
-                    ref=empty_ref,
-                    ref_mask=empty_ref_mask,
+                    ref=reference,
+                    ref_mask=reference_mask,
                     drop_audio_cond=False,
                     drop_text=False,
                     cfg_infer=False,

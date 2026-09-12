@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: $0 REFERENCE_WAV [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+REFERENCE_WAV="$1"
+OUTPUT_DIR="${2:-benchmarks/results/reference-audio-smoke}"
+
+exec uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+
+reference = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+output_dir.mkdir(parents=True, exist_ok=True)
+
+instruction = (
+    'Say the following with the same voice: '
+    '"The service restarted successfully and returned a clean health check."'
+)
+seconds = 5.0
+engine = TinyTAuK.from_pretrained()
+
+condition_started = time.perf_counter()
+conditioning = engine.condition(
+    instruction,
+    reference_audio=reference,
+    seed=42,
+)
+condition_seconds = time.perf_counter() - condition_started
+
+runs = []
+for seed in (42, 43):
+    started = time.perf_counter()
+    result = engine.generate_conditioned(conditioning, gen_seconds=seconds, seed=seed)
+    wall = time.perf_counter() - started
+    if not torch.isfinite(result.audio).all():
+        raise RuntimeError(f"seed {seed} produced NaN/Inf audio")
+    path = output_dir / f"clone-seed-{seed}.wav"
+    torchaudio.save(str(path), result.audio, result.sample_rate)
+    runs.append(
+        {
+            "seed": seed,
+            "output": str(path),
+            "wall_seconds": wall,
+            "generated_seconds": result.generated_seconds,
+            "rtf": wall / result.generated_seconds,
+            "stage_seconds": result.stage_seconds,
+            "peak_amplitude": float(result.audio.abs().max()),
+            "rms": float(torch.sqrt(torch.mean(result.audio.square()))),
+        }
+    )
+
+print(
+    json.dumps(
+        {
+            "reference": str(reference),
+            "condition_seconds": condition_seconds,
+            "conditioning_stage_seconds": conditioning.stage_seconds,
+            "reference_latent_frames": (
+                int(conditioning.reference_lengths[0])
+                if isinstance(conditioning.reference_lengths, torch.Tensor)
+                else None
+            ),
+            "runs": runs,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+)
+PY

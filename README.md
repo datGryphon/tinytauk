@@ -8,17 +8,21 @@ validation, retries, chunking, and audio stitching.
 
 ## Status
 
-Version `0.1.0` supports text/instruction TTS with:
+Version `0.2.0` supports:
 
+- text/instruction TTS;
+- reusable Qwen/AuK utterance conditioning for cheap resampling/retries;
+- reference-audio conditioning and zero-shot voice cloning;
+- file-path and in-memory tensor reference audio;
 - Qwen2.5-Omni conditioning and AuK hidden-state fusion;
 - AuK-Flash four-step Flux2 generation;
-- BigVGAN waveform decode;
-- INT8 weight-only Qwen text weights;
+- BigVGAN reference encode and waveform decode;
+- INT8 weight-only Qwen text weights with the audio tower kept FP32;
 - dynamic INT8 Flux2 core weights;
-- FP32 Inductor-compiled VAE.
+- FP32 Inductor-compiled VAE decode.
 
-Reference-audio generation is not implemented yet. The Qwen audio tower is
-retained for that path.
+The reference-audio encoder is loaded lazily on the first request that needs it,
+so text-only startup keeps the `0.1.0` memory shape.
 
 ## Setup
 
@@ -30,6 +34,8 @@ uv sync
 
 ## CLI
 
+Text-only generation:
+
 ```bash
 uv run tinytauk generate \
   --seconds 9 \
@@ -37,15 +43,27 @@ uv run tinytauk generate \
   'Generate speech based on the following description: "A calm, natural technical narration". The content to speak is: "The service restarted successfully.".'
 ```
 
+Zero-shot voice cloning:
+
+```bash
+uv run tinytauk generate \
+  --reference-audio voice.wav \
+  --seconds 6 \
+  --output cloned.wav \
+  'Say the following with the same voice: "The service restarted successfully."'
+```
+
 The command uses the built-in CPU configuration, writes a 24 kHz WAV, and
 prints generation timing as JSON. Pass `--profile` to use a TOML runtime
 profile instead.
 
-The VAE compiles lazily on first use. Long-running callers should keep one
+The decoder compiles lazily on first use. Long-running callers should keep one
 `TinyTAuK` instance resident and run one disposable generation before serving.
-A single instance processes one generation at a time.
+A single instance processes one inference operation at a time.
 
 ## Python API
+
+The normal one-shot path stays small:
 
 ```python
 from tinytauk import TinyTAuK
@@ -57,6 +75,31 @@ result = engine.generate(
     gen_seconds=9,
 )
 ```
+
+Reference audio can be a path or `(waveform, sample_rate)` tuple:
+
+```python
+result = engine.generate(
+    'Say the following with the same voice: "The service restarted successfully."',
+    reference_audio="voice.wav",
+    gen_seconds=6,
+)
+```
+
+For retries of the same utterance, build conditioning once and resample it:
+
+```python
+conditioning = engine.condition(
+    'Say the following with the same voice: "The service restarted successfully."',
+    reference_audio="voice.wav",
+)
+
+first = engine.generate_conditioned(conditioning, gen_seconds=6, seed=42)
+retry = engine.generate_conditioned(conditioning, gen_seconds=6, seed=43)
+```
+
+`generate_conditioned()` reuses both the Qwen conditioning and any encoded
+reference latents. It does not rerun Qwen or the reference VAE.
 
 `result.audio` is a CPU `torch.Tensor`; `sample_rate`, `generated_seconds`, and
 per-stage timings are also returned.

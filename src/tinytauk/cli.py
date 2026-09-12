@@ -30,6 +30,7 @@ def _doctor() -> int:
         "torch": torch.__version__,
         "torch_threads": torch.get_num_threads(),
         "torchao": _optional_package_version("torchao"),
+        "qwen_omni_utils": _optional_package_version("qwen-omni-utils"),
         "cuda_available": torch.cuda.is_available(),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
@@ -58,10 +59,12 @@ def _generate(
     output: Path,
     seconds: float,
     seed: int | None,
+    reference_audio: Path | None,
 ) -> int:
     engine = TinyTAuK.from_config(profile) if profile is not None else TinyTAuK.from_pretrained()
     result = engine.generate(
         instruction,
+        reference_audio=reference_audio,
         gen_seconds=seconds,
         seed=seed,
     )
@@ -98,6 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--output", type=Path, default=Path("output.wav"))
     generate.add_argument("--seconds", type=float, default=10.0)
     generate.add_argument("--seed", type=int)
+    generate.add_argument("--reference-audio", type=Path)
 
     return parser
 
@@ -116,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             args.seconds,
             args.seed,
+            args.reference_audio,
         )
 
     raise AssertionError(f"Unhandled command: {args.command}")
