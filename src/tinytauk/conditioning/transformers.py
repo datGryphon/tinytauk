@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
 
+from tinytauk.audio import qwen_audio_value
 from tinytauk.config import ComponentConfig, ModelConfig
 from tinytauk.types import Conditioning, GenerationRequest
 
@@ -118,7 +119,7 @@ class TransformersConditioner:
         if request.reference_audio is None:
             content[0]["text"] = f"{text}{_NO_PROMPT_AUDIO}"
         else:
-            content.append({"type": "audio", "audio": str(request.reference_audio)})
+            content.append({"type": "audio", "audio": qwen_audio_value(request.reference_audio)})
         return [{"role": "user", "content": content}]
 
     def _build_inputs(self, request: GenerationRequest) -> Any:
@@ -181,4 +182,9 @@ class TransformersConditioner:
         )
         weights = F.softmax(self.layer_weights, dim=0)
         fused = (stacked * weights[:, None, None, None]).sum(dim=0) * self.layer_scale
-        return Conditioning(values=fused, attention_mask=attention_mask.bool())
+        return Conditioning(
+            values=fused,
+            attention_mask=attention_mask.bool(),
+            instruction=request.instruction,
+            seed=request.seed,
+        )

@@ -6,33 +6,59 @@ from threading import Lock
 import torch
 
 from tinytauk import RuntimeConfig, TinyTAuK
-from tinytauk.types import Conditioning, GenerationRequest
+from tinytauk.types import AudioInput, Conditioning, GenerationRequest
 
 
 class _Conditioner:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def encode(self, request: GenerationRequest) -> Conditioning:
+        self.calls += 1
         assert request.instruction == "Test"
-        assert request.gen_seconds == 2.0
         assert request.seed == 42
         return Conditioning(
             values=torch.zeros((1, 1, 2048), dtype=torch.float32),
             attention_mask=torch.ones((1, 1), dtype=torch.bool),
+            instruction=request.instruction,
         )
 
 
 class _Generator:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def generate_latents(
         self,
         request: GenerationRequest,
         conditioning: Conditioning,
     ) -> torch.Tensor:
+        self.calls += 1
         assert request.instruction == "Test"
+        assert request.gen_seconds == 2.0
         assert isinstance(conditioning.values, torch.Tensor)
         return torch.zeros((1, 100, 64), dtype=torch.float32)
 
 
 class _VAE:
     sample_rate = 24_000
+
+    def __init__(self) -> None:
+        self.reference_calls = 0
+
+    def encode_reference(
+        self,
+        source: AudioInput,
+        *,
+        seed: int | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.reference_calls += 1
+        assert source == "voice.wav"
+        assert seed == 42
+        return (
+            torch.zeros((1, 12, 64), dtype=torch.float32),
+            torch.tensor([12], dtype=torch.long),
+        )
 
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
         assert latents.shape == (1, 100, 64)
@@ -64,6 +90,34 @@ def test_generate_wires_standalone_components() -> None:
     assert result.wall_seconds >= 0.0
 
 
+def test_conditioned_generation_reuses_conditioning() -> None:
+    engine = _fake_engine()
+    conditioning = engine.condition("Test")
+
+    first = engine.generate_conditioned(conditioning, gen_seconds=2.0, seed=42)
+    second = engine.generate_conditioned(conditioning, gen_seconds=2.0, seed=42)
+
+    assert engine.conditioner.calls == 1  # type: ignore[attr-defined]
+    assert engine.generator.calls == 2  # type: ignore[attr-defined]
+    assert first.audio.shape == second.audio.shape == (1, 48_000)
+    assert set(first.stage_seconds) == {"generator", "vae"}
+
+
+def test_reference_audio_is_encoded_once_into_conditioning() -> None:
+    engine = _fake_engine()
+    conditioning = engine.condition("Test", reference_audio="voice.wav")
+
+    assert engine.vae.reference_calls == 1  # type: ignore[attr-defined]
+    assert isinstance(conditioning.reference_latents, torch.Tensor)
+    assert conditioning.reference_latents.shape == (1, 12, 64)
+    assert torch.equal(conditioning.reference_lengths, torch.tensor([12]))
+    assert set(conditioning.stage_seconds) == {"conditioning", "reference_vae"}
+
+    engine.generate_conditioned(conditioning, gen_seconds=2.0)
+    engine.generate_conditioned(conditioning, gen_seconds=2.0, seed=43)
+    assert engine.vae.reference_calls == 1  # type: ignore[attr-defined]
+
+
 def test_generate_rejects_invalid_requests_before_execution() -> None:
     engine = _fake_engine()
 
@@ -80,15 +134,13 @@ def test_generate_rejects_invalid_requests_before_execution() -> None:
             raise AssertionError(f"expected ValueError matching {match!r}")
 
 
-def test_generate_rejects_reference_audio_before_execution() -> None:
+def test_generate_accepts_reference_audio() -> None:
     engine = _fake_engine()
+    result = engine.generate("Test", reference_audio="voice.wav", gen_seconds=2.0)
 
-    try:
-        engine.generate("Test", reference_audio="voice.wav", gen_seconds=2.0)
-    except NotImplementedError as exc:
-        assert "reference-audio generation is not implemented" in str(exc)
-    else:
-        raise AssertionError("expected reference audio to fail before execution")
+    assert result.audio.shape == (1, 48_000)
+    assert engine.vae.reference_calls == 1  # type: ignore[attr-defined]
+    assert set(result.stage_seconds) == {"conditioning", "reference_vae", "generator", "vae"}
 
 
 def test_from_pretrained_matches_release_cpu_profile() -> None:

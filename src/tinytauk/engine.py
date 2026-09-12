@@ -11,7 +11,7 @@ from huggingface_hub import snapshot_download
 from .conditioning.transformers import TransformersConditioner
 from .config import RuntimeConfig
 from .generator.pytorch import PyTorchAuKGenerator
-from .types import GenerationRequest, GenerationResult
+from .types import AudioInput, Conditioning, GenerationRequest, GenerationResult
 from .vae.pytorch import PyTorchVAE
 
 
@@ -125,49 +125,149 @@ class TinyTAuK:
         }
         return cls(RuntimeConfig.from_dict(raw))
 
+    @staticmethod
+    def _validate_instruction(instruction: str) -> None:
+        if not instruction.strip():
+            raise ValueError("instruction must not be empty")
+
+    @staticmethod
+    def _validate_seconds(gen_seconds: float) -> None:
+        if not math.isfinite(gen_seconds) or gen_seconds <= 0:
+            raise ValueError("gen_seconds must be a positive finite number")
+
+    def _condition_unlocked(
+        self,
+        instruction: str,
+        *,
+        reference_audio: AudioInput | None,
+        seed: int,
+    ) -> Conditioning:
+        request = GenerationRequest(
+            instruction=instruction,
+            reference_audio=reference_audio,
+            seed=seed,
+        )
+        stage_seconds: dict[str, float] = {}
+
+        reference_latents: torch.Tensor | None = None
+        reference_lengths: torch.Tensor | None = None
+        if reference_audio is not None:
+            stage_started = time.perf_counter()
+            reference_latents, reference_lengths = self.vae.encode_reference(
+                reference_audio,
+                seed=seed,
+            )
+            stage_seconds["reference_vae"] = time.perf_counter() - stage_started
+
+        stage_started = time.perf_counter()
+        conditioning = self.conditioner.encode(request)
+        stage_seconds["conditioning"] = time.perf_counter() - stage_started
+        conditioning.instruction = instruction
+        conditioning.reference_latents = reference_latents
+        conditioning.reference_lengths = reference_lengths
+        conditioning.stage_seconds = stage_seconds
+        return conditioning
+
+    def condition(
+        self,
+        instruction: str,
+        *,
+        reference_audio: AudioInput | None = None,
+        seed: int | None = None,
+    ) -> Conditioning:
+        """Build reusable conditioning for one utterance and optional reference audio."""
+
+        self._validate_instruction(instruction)
+        resolved_seed = self.config.runtime.seed if seed is None else seed
+        with self._generate_lock:
+            return self._condition_unlocked(
+                instruction,
+                reference_audio=reference_audio,
+                seed=resolved_seed,
+            )
+
+    def _generate_conditioned_unlocked(
+        self,
+        conditioning: Conditioning,
+        *,
+        gen_seconds: float,
+        seed: int,
+        inherited_stage_seconds: dict[str, float] | None = None,
+        started: float | None = None,
+    ) -> GenerationResult:
+        if not conditioning.instruction.strip():
+            raise ValueError("conditioning is missing its source instruction")
+
+        request = GenerationRequest(
+            instruction=conditioning.instruction,
+            gen_seconds=gen_seconds,
+            seed=seed,
+        )
+        stage_seconds = dict(inherited_stage_seconds or {})
+        wall_started = time.perf_counter() if started is None else started
+
+        stage_started = time.perf_counter()
+        latents = self.generator.generate_latents(request, conditioning)
+        stage_seconds["generator"] = time.perf_counter() - stage_started
+
+        stage_started = time.perf_counter()
+        decoded = self.vae.decode(latents)
+        stage_seconds["vae"] = time.perf_counter() - stage_started
+
+        audio = decoded.squeeze(0).detach().cpu().to(torch.float32)
+        generated_seconds = float(audio.shape[-1]) / float(self.vae.sample_rate)
+        return GenerationResult(
+            audio=audio,
+            sample_rate=self.vae.sample_rate,
+            generated_seconds=generated_seconds,
+            wall_seconds=time.perf_counter() - wall_started,
+            stage_seconds=stage_seconds,
+        )
+
+    def generate_conditioned(
+        self,
+        conditioning: Conditioning,
+        *,
+        gen_seconds: float = 10.0,
+        seed: int | None = None,
+    ) -> GenerationResult:
+        """Generate from already-built conditioning without rerunning Qwen or the reference VAE."""
+
+        self._validate_seconds(gen_seconds)
+        if seed is None:
+            resolved_seed = conditioning.seed if conditioning.seed is not None else self.config.runtime.seed
+        else:
+            resolved_seed = seed
+        with self._generate_lock:
+            return self._generate_conditioned_unlocked(
+                conditioning,
+                gen_seconds=gen_seconds,
+                seed=resolved_seed,
+            )
+
     def generate(
         self,
         instruction: str,
         *,
-        reference_audio: str | Path | None = None,
+        reference_audio: AudioInput | None = None,
         gen_seconds: float = 10.0,
         seed: int | None = None,
     ) -> GenerationResult:
-        if not instruction.strip():
-            raise ValueError("instruction must not be empty")
-        if not math.isfinite(gen_seconds) or gen_seconds <= 0:
-            raise ValueError("gen_seconds must be a positive finite number")
-        if reference_audio is not None:
-            raise NotImplementedError("reference-audio generation is not implemented")
-
-        request = GenerationRequest(
-            instruction=instruction,
-            gen_seconds=gen_seconds,
-            seed=self.config.runtime.seed if seed is None else seed,
-        )
+        self._validate_instruction(instruction)
+        self._validate_seconds(gen_seconds)
+        resolved_seed = self.config.runtime.seed if seed is None else seed
 
         with self._generate_lock:
             started = time.perf_counter()
-            stage_seconds: dict[str, float] = {}
-
-            stage_started = time.perf_counter()
-            conditioning = self.conditioner.encode(request)
-            stage_seconds["conditioning"] = time.perf_counter() - stage_started
-
-            stage_started = time.perf_counter()
-            latents = self.generator.generate_latents(request, conditioning)
-            stage_seconds["generator"] = time.perf_counter() - stage_started
-
-            stage_started = time.perf_counter()
-            decoded = self.vae.decode(latents)
-            stage_seconds["vae"] = time.perf_counter() - stage_started
-
-            audio = decoded.squeeze(0).detach().cpu().to(torch.float32)
-            generated_seconds = float(audio.shape[-1]) / float(self.vae.sample_rate)
-            return GenerationResult(
-                audio=audio,
-                sample_rate=self.vae.sample_rate,
-                generated_seconds=generated_seconds,
-                wall_seconds=time.perf_counter() - started,
-                stage_seconds=stage_seconds,
+            conditioning = self._condition_unlocked(
+                instruction,
+                reference_audio=reference_audio,
+                seed=resolved_seed,
+            )
+            return self._generate_conditioned_unlocked(
+                conditioning,
+                gen_seconds=gen_seconds,
+                seed=resolved_seed,
+                inherited_stage_seconds=conditioning.stage_seconds,
+                started=started,
             )
