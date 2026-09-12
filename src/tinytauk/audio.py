@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import torch
-import torchaudio
+import torchaudio  # type: ignore[import-untyped]
 
 from .types import AudioInput
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, fields
-from typing import Any
+from typing import Any, cast
 
 import torch
 from torch import nn
@@ -51,7 +51,7 @@ class _Conv1dS(nn.Module):
         )
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.layer(inputs)
+        return cast(torch.Tensor, self.layer(inputs))
 
 
 class _ResStack(nn.Module):
@@ -132,7 +132,7 @@ class _Encoder(nn.Module):
         self.generator = nn.Sequential(*layers)
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        return self.generator(audio)
+        return cast(torch.Tensor, self.generator(audio))
 
 
 class BigVGANEncoder(nn.Module):
@@ -178,7 +178,9 @@ class BigVGANEncoder(nn.Module):
             )
         latents = mean + noise * torch.exp(log_std)
         latents = latents.transpose(1, 2).float()
-        latents = (latents - self.global_mean.float()) / torch.sqrt(self.global_log_std.float())
+        global_mean = cast(torch.Tensor, self.global_mean)
+        global_log_std = cast(torch.Tensor, self.global_log_std)
+        latents = (latents - global_mean.float()) / torch.sqrt(global_log_std.float())
         latent_lengths = sample_lengths // self.hop_size
         latent_lengths = torch.clamp(latent_lengths, max=latents.shape[1])
         return latents, latent_lengths
