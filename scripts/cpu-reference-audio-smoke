@@ -85,36 +85,34 @@ for seed in seeds:
         }
     )
 
-print(
-    json.dumps(
-        {
-            "profile": profile or "from_pretrained",
-            "conditioner_quantization": engine.config.conditioner.quantization,
-            "generator_quantization": engine.config.generator.quantization,
-            "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
-            "generator_quantized_engine": engine.generator.quantized_engine,
-            "reference": str(reference),
-            "condition_seconds": condition_seconds,
-            "conditioning_stage_seconds": conditioning.stage_seconds,
-            "reference_latent_frames": (
-                int(conditioning.reference_lengths[0])
-                if isinstance(conditioning.reference_lengths, torch.Tensor)
-                else None
-            ),
-            "rss_before_mb": before.current_rss_mb,
-            "rss_after_load_mb": after_load.current_rss_mb,
-            "peak_rss_after_load_mb": after_load.peak_rss_mb,
-            "rss_after_conditioning_mb": after_conditioning.current_rss_mb,
-            "peak_rss_after_conditioning_mb": after_conditioning.peak_rss_mb,
-            "runs": runs,
-            "peak_rss_mb": max(
-                after_load.peak_rss_mb,
-                after_conditioning.peak_rss_mb,
-                *(float(run["peak_rss_mb"]) for run in runs),
-            ),
-        },
-        indent=2,
-        sort_keys=True,
-    )
-)
+payload = {
+    "profile": profile or "from_pretrained",
+    "conditioner_quantization": engine.config.conditioner.quantization,
+    "generator_quantization": engine.config.generator.quantization,
+    "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
+    "generator_quantized_engine": engine.generator.quantized_engine,
+    "reference": str(reference),
+    "condition_seconds": condition_seconds,
+    "conditioning_stage_seconds": conditioning.stage_seconds,
+    "reference_latent_frames": (
+        int(conditioning.reference_lengths[0])
+        if isinstance(conditioning.reference_lengths, torch.Tensor)
+        else None
+    ),
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_after_load_mb": after_load.peak_rss_mb,
+    "rss_after_conditioning_mb": after_conditioning.current_rss_mb,
+    "peak_rss_after_conditioning_mb": after_conditioning.peak_rss_mb,
+    "runs": runs,
+    "peak_rss_mb": max(
+        after_load.peak_rss_mb,
+        after_conditioning.peak_rss_mb,
+        *(float(run["peak_rss_mb"]) for run in runs),
+    ),
+}
+output_path = output_dir / "result.json"
+output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+print(json.dumps(payload, indent=2, sort_keys=True))
+print(f"Wrote {output_path}")
 PY
