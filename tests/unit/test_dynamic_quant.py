@@ -23,7 +23,10 @@ def test_sensitive_generator_linear_names() -> None:
     assert is_sensitive_generator_linear("transformer_blocks.0.attn_norm.linear")
     assert is_sensitive_generator_linear("norm_out.linear")
     assert is_sensitive_generator_linear("proj_out")
+    assert is_sensitive_generator_linear("transformer_blocks.0.ff_x.linear_in")
+    assert is_sensitive_generator_linear("transformer_blocks.9.ff_x.linear_out")
     assert not is_sensitive_generator_linear("transformer_blocks.0.attn.to_qkv")
+    assert not is_sensitive_generator_linear("transformer_blocks.0.ff_c.linear_in")
     assert not is_sensitive_generator_linear("single_transformer_blocks.0.ff.linear_in")
 
 
