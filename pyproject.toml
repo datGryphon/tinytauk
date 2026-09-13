@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tinytauk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Memory-efficient AuK-Flash inference runtime"
 readme = "README.md"
 requires-python = ">=3.13,<3.14"
@@ -24,6 +24,7 @@ dependencies = [
   "torchaudio==2.7.1",
   "torchvision==0.22.1",
   "transformers>=4.52,<5",
+  "triton==3.3.1; platform_machine == 'x86_64' and sys_platform == 'linux'",
   "x-transformers>=1.31.14",
 ]
 
