@@ -18,21 +18,21 @@ _SENSITIVE_NAME_PARTS = (
 
 
 def is_sensitive_generator_linear(name: str) -> bool:
-    """Return whether a Flux2 Linear is excluded from dynamic INT8 quantization."""
+    """Return whether a Flux2 Linear is excluded from low-bit quantization."""
 
-    # Dynamic INT8 on MMDiT audio-stream FFNs destabilizes reference-conditioned generation.
+    # Quantizing MMDiT audio-stream FFNs destabilizes reference-conditioned generation.
     return any(part in name for part in _SENSITIVE_NAME_PARTS) or (
         name.startswith("transformer_blocks.") and ".ff_x." in name
     )
 
 
-def select_dynamic_int8_linears(
+def select_generator_quant_linears(
     model: nn.Module,
     *,
     min_weight_elements: int = 1_000_000,
     include_sensitive: bool = False,
 ) -> tuple[str, ...]:
-    """Select large Linear modules for dynamic INT8 CPU quantization."""
+    """Select large Flux2 Linear modules eligible for low-bit quantization."""
 
     if min_weight_elements < 1:
         raise ValueError("min_weight_elements must be positive")
