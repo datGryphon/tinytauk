@@ -79,7 +79,8 @@ class TransformersConditioner:
     ) -> None:
         if config.quantization not in {"none", "int8-weight-only", "int4-weight-only"}:
             raise ValueError(
-                "TransformersConditioner supports only none, int8-weight-only, or int4-weight-only quantization"
+                "TransformersConditioner supports only none, int8-weight-only, "
+                "or int4-weight-only quantization"
             )
         if upstream_parity and config.quantization != "none":
             raise ValueError("upstream parity requires an unquantized conditioner")
