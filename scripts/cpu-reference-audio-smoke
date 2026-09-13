@@ -12,10 +12,16 @@ fi
 REFERENCE_WAV="$1"
 OUTPUT_DIR="${2:-benchmarks/results/reference-audio-smoke}"
 
-exec uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
+exec env \
+  PROFILE="${PROFILE:-}" \
+  SEEDS="${SEEDS:-42,43}" \
+  GEN_SECONDS="${GEN_SECONDS:-5}" \
+  uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
 from __future__ import annotations
 
 import json
+import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,27 +35,33 @@ from tinytauk.reference import memory_sample
 reference = Path(sys.argv[1])
 output_dir = Path(sys.argv[2])
 output_dir.mkdir(parents=True, exist_ok=True)
+profile = os.environ["PROFILE"].strip()
+seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
+seconds = float(os.environ["GEN_SECONDS"])
+if not seeds:
+    raise SystemExit("SEEDS must contain at least one integer")
+if not math.isfinite(seconds) or seconds <= 0:
+    raise SystemExit("GEN_SECONDS must be a positive finite number")
 
 instruction = (
     'Say the following with the same voice: '
     '"The service restarted successfully and returned a clean health check."'
 )
-seconds = 5.0
 before = memory_sample()
-engine = TinyTAuK.from_pretrained()
+engine = TinyTAuK.from_config(profile) if profile else TinyTAuK.from_pretrained()
 after_load = memory_sample()
 
 condition_started = time.perf_counter()
 conditioning = engine.condition(
     instruction,
     reference_audio=reference,
-    seed=42,
+    seed=seeds[0],
 )
 condition_seconds = time.perf_counter() - condition_started
 after_conditioning = memory_sample()
 
 runs = []
-for seed in (42, 43):
+for seed in seeds:
     started = time.perf_counter()
     result = engine.generate_conditioned(conditioning, gen_seconds=seconds, seed=seed)
     wall = time.perf_counter() - started
@@ -76,6 +88,11 @@ for seed in (42, 43):
 print(
     json.dumps(
         {
+            "profile": profile or "from_pretrained",
+            "conditioner_quantization": engine.config.conditioner.quantization,
+            "generator_quantization": engine.config.generator.quantization,
+            "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
+            "generator_quantized_engine": engine.generator.quantized_engine,
             "reference": str(reference),
             "condition_seconds": condition_seconds,
             "conditioning_stage_seconds": conditioning.stage_seconds,
