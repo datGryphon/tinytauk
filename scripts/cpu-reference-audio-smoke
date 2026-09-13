@@ -24,6 +24,7 @@ import torch
 import torchaudio
 
 from tinytauk import TinyTAuK
+from tinytauk.reference import memory_sample
 
 reference = Path(sys.argv[1])
 output_dir = Path(sys.argv[2])
@@ -34,7 +35,9 @@ instruction = (
     '"The service restarted successfully and returned a clean health check."'
 )
 seconds = 5.0
+before = memory_sample()
 engine = TinyTAuK.from_pretrained()
+after_load = memory_sample()
 
 condition_started = time.perf_counter()
 conditioning = engine.condition(
@@ -43,12 +46,14 @@ conditioning = engine.condition(
     seed=42,
 )
 condition_seconds = time.perf_counter() - condition_started
+after_conditioning = memory_sample()
 
 runs = []
 for seed in (42, 43):
     started = time.perf_counter()
     result = engine.generate_conditioned(conditioning, gen_seconds=seconds, seed=seed)
     wall = time.perf_counter() - started
+    memory = memory_sample()
     if not torch.isfinite(result.audio).all():
         raise RuntimeError(f"seed {seed} produced NaN/Inf audio")
     path = output_dir / f"clone-seed-{seed}.wav"
@@ -63,6 +68,8 @@ for seed in (42, 43):
             "stage_seconds": result.stage_seconds,
             "peak_amplitude": float(result.audio.abs().max()),
             "rms": float(torch.sqrt(torch.mean(result.audio.square()))),
+            "current_rss_mb": memory.current_rss_mb,
+            "peak_rss_mb": memory.peak_rss_mb,
         }
     )
 
@@ -77,7 +84,17 @@ print(
                 if isinstance(conditioning.reference_lengths, torch.Tensor)
                 else None
             ),
+            "rss_before_mb": before.current_rss_mb,
+            "rss_after_load_mb": after_load.current_rss_mb,
+            "peak_rss_after_load_mb": after_load.peak_rss_mb,
+            "rss_after_conditioning_mb": after_conditioning.current_rss_mb,
+            "peak_rss_after_conditioning_mb": after_conditioning.peak_rss_mb,
             "runs": runs,
+            "peak_rss_mb": max(
+                after_load.peak_rss_mb,
+                after_conditioning.peak_rss_mb,
+                *(float(run["peak_rss_mb"]) for run in runs),
+            ),
         },
         indent=2,
         sort_keys=True,
