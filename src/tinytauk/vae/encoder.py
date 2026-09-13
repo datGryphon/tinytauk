@@ -64,7 +64,7 @@ class _Conv1dS(nn.Module):
         weight_norm(self.layer)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.layer(inputs)
+        return self.layer.forward(inputs)
 
 
 class _ResStack(nn.Module):
@@ -145,7 +145,7 @@ class _Encoder(nn.Module):
         self.generator = _TensorSequential(*layers)
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        return self.generator(audio)
+        return self.generator.forward(audio)
 
 
 class BigVGANEncoder(nn.Module):
