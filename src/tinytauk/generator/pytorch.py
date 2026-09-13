@@ -57,7 +57,8 @@ class PyTorchAuKGenerator:
     ) -> None:
         if config.quantization not in {"none", "int8", "int8-weight-only", "int4-weight-only"}:
             raise ValueError(
-                "PyTorch AuK generator supports only none, int8, int8-weight-only, or int4-weight-only quantization"
+                "PyTorch AuK generator supports only none, int8, int8-weight-only, "
+                "or int4-weight-only quantization"
             )
         if config.compile:
             raise ValueError("PyTorch AuK generator compilation is not supported")
