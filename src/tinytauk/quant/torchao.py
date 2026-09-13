@@ -18,15 +18,11 @@ def apply_weight_only_linears(
     if not names:
         raise ValueError("No Linear modules selected for weight-only quantization")
 
+    filter_fn = lambda _module, fqn: fqn in names
     if bits == 8:
-        config = Int8WeightOnlyConfig(version=2)
-    elif bits == 4:
-        config = Int4WeightOnlyConfig(group_size=128, version=2)
-    else:
-        raise ValueError(f"unsupported weight-only bit width: {bits}")
-
-    quantize_(
-        model,
-        config,
-        filter_fn=lambda _module, fqn: fqn in names,
-    )
+        quantize_(model, Int8WeightOnlyConfig(version=2), filter_fn=filter_fn)
+        return
+    if bits == 4:
+        quantize_(model, Int4WeightOnlyConfig(group_size=128, version=2), filter_fn=filter_fn)
+        return
+    raise ValueError(f"unsupported weight-only bit width: {bits}")
