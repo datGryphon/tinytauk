@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+REFERENCE_WAV="${1:-}"
+RESULT_ROOT="${RESULT_ROOT:-benchmarks/results/quant-sweep}"
+GEN_SECONDS="${GEN_SECONDS:-5}"
+WARM_RUNS="${WARM_RUNS:-1}"
+SEEDS="${SEEDS:-42}"
+
+status=0
+for name in w16 w8a16 w4a16; do
+  profile="profiles/sweep/cpu-${name}.toml"
+  text_out="$RESULT_ROOT/$name/text"
+  ref_out="$RESULT_ROOT/$name/reference"
+
+  echo
+  echo "================ $name text benchmark ================"
+  if ! PROFILE="$profile" \
+      GEN_SECONDS="$GEN_SECONDS" \
+      WARM_RUNS="$WARM_RUNS" \
+      OUT_DIR="$text_out" \
+      bash scripts/cpu-bench; then
+    echo "$name text benchmark failed" >&2
+    status=1
+    continue
+  fi
+
+  if [[ -n "$REFERENCE_WAV" ]]; then
+    echo
+    echo "================ $name reference benchmark ================"
+    if ! PROFILE="$profile" \
+        GEN_SECONDS="$GEN_SECONDS" \
+        SEEDS="$SEEDS" \
+        scripts/cpu-reference-audio-smoke "$REFERENCE_WAV" "$ref_out"; then
+      echo "$name reference benchmark failed" >&2
+      status=1
+    fi
+  fi
+done
+
+exit "$status"
