@@ -28,6 +28,7 @@
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.ffmpeg
               pkgs.libsndfile
               pkgs.stdenv.cc.cc.lib
               pkgs.zlib
