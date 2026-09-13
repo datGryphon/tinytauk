@@ -19,7 +19,7 @@
               python313
               uv
               ruff
-              ffmpeg
+              ffmpeg_8
               libsndfile
               zlib
               pkg-config
@@ -27,12 +27,18 @@
               gcc
             ];
 
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.ffmpeg_8.lib
+              pkgs.libsndfile
+              pkgs.stdenv.cc.cc.lib
+              pkgs.zlib
+            ];
+
             shellHook = ''
               export UV_PROJECT_ENVIRONMENT="$PWD/.venv"
               export UV_PYTHON="${pkgs.python313}/bin/python3"
               export UV_NO_MANAGED_PYTHON=1
               export PYTHONUNBUFFERED=1
-              export LD_LIBRARY_PATH="${pkgs.ffmpeg.lib}/lib:${pkgs.libsndfile}/lib:${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
               echo "TinyTAuK dev shell: Python $(python --version 2>&1), uv $(uv --version 2>&1)"
               echo "Run: uv sync && ./scripts/check"
