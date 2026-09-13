@@ -7,10 +7,10 @@ from typing import Any, Literal, cast
 
 Device = str
 DType = Literal["fp32", "bf16", "fp16"]
-Quantization = Literal["none", "int8", "int8-weight-only"]
+Quantization = Literal["none", "int8", "int8-weight-only", "int4-weight-only"]
 
 _VALID_DTYPES = {"fp32", "bf16", "fp16"}
-_VALID_QUANTIZATION = {"none", "int8", "int8-weight-only"}
+_VALID_QUANTIZATION = {"none", "int8", "int8-weight-only", "int4-weight-only"}
 _COMPONENT_KEYS = {
     "backend",
     "device",
