@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+"$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import time
+
+import torch
+from torch import nn
+from torchao.prototype.quantization.int4 import Int4WeightOnlyOpaqueTensorConfig
+from torchao.quantization import Int8WeightOnlyConfig, quantize_
+from transformers import TorchAoConfig
+
+FEATURES = 2048
+BATCH = 4
+
+
+class ToyLinear(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = nn.Linear(FEATURES, FEATURES, bias=False, dtype=torch.bfloat16)
+
+    def forward(self, value: torch.Tensor) -> torch.Tensor:
+        return self.linear.forward(value)
+
+
+def make_model() -> ToyLinear:
+    torch.manual_seed(42)
+    return ToyLinear().eval()
+
+
+def run(name: str, config: object, inputs: torch.Tensor, baseline: torch.Tensor) -> None:
+    model = make_model()
+    started = time.perf_counter()
+    quantize_(model, config)
+    quantize_seconds = time.perf_counter() - started
+
+    started = time.perf_counter()
+    output = model.forward(inputs)
+    forward_seconds = time.perf_counter() - started
+    if not torch.isfinite(output).all():
+        raise RuntimeError(f"{name} produced NaN/Inf")
+
+    print(
+        f"{name}: config={type(config).__name__} "
+        f"quantize={quantize_seconds:.3f}s forward={forward_seconds:.4f}s "
+        f"max_abs_error={float((output.float() - baseline.float()).abs().max()):.6f}"
+    )
+
+
+torch.set_num_threads(4)
+torch.manual_seed(7)
+inputs = torch.randn(BATCH, FEATURES, dtype=torch.bfloat16)
+baseline_model = make_model()
+baseline = baseline_model.forward(inputs)
+print(f"w16: dtype={baseline.dtype} finite={bool(torch.isfinite(baseline).all())}")
+
+run("w8a16", Int8WeightOnlyConfig(version=2), inputs, baseline)
+run(
+    "w4a16-cpu",
+    Int4WeightOnlyOpaqueTensorConfig(group_size=128),
+    inputs,
+    baseline,
+)
+
+hf_w4 = TorchAoConfig("int4_weight_only", group_size=128).get_apply_tensor_subclass()
+run("w4a16-hf-cpu", hf_w4, inputs, baseline)
+PY
