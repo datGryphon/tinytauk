@@ -18,9 +18,12 @@ _SENSITIVE_NAME_PARTS = (
 
 
 def is_sensitive_generator_linear(name: str) -> bool:
-    """Return whether a Flux2 Linear is kept in FP32 by the conservative policy."""
+    """Return whether a Flux2 Linear is excluded from dynamic INT8 quantization."""
 
-    return any(part in name for part in _SENSITIVE_NAME_PARTS)
+    # Dynamic INT8 on MMDiT audio-stream FFNs destabilizes reference-conditioned generation.
+    return any(part in name for part in _SENSITIVE_NAME_PARTS) or (
+        name.startswith("transformer_blocks.") and ".ff_x." in name
+    )
 
 
 def select_dynamic_int8_linears(
