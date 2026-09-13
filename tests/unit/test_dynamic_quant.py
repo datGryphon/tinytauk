@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from torch import nn
 
-from tinytauk.quant.dynamic import is_sensitive_generator_linear, select_dynamic_int8_linears
+from tinytauk.quant.dynamic import is_sensitive_generator_linear, select_generator_quant_linears
 
 
 class _ToyGenerator(nn.Module):
@@ -30,15 +30,15 @@ def test_sensitive_generator_linear_names() -> None:
     assert not is_sensitive_generator_linear("single_transformer_blocks.0.ff.linear_in")
 
 
-def test_select_dynamic_int8_linears_conservative() -> None:
+def test_select_generator_quant_linears_conservative() -> None:
     model = _ToyGenerator()
-    selected = select_dynamic_int8_linears(model, min_weight_elements=100)
+    selected = select_generator_quant_linears(model, min_weight_elements=100)
     assert set(selected) == {"attn", "ff"}
 
 
-def test_select_dynamic_int8_linears_aggressive() -> None:
+def test_select_generator_quant_linears_aggressive() -> None:
     model = _ToyGenerator()
-    selected = select_dynamic_int8_linears(
+    selected = select_generator_quant_linears(
         model,
         min_weight_elements=100,
         include_sensitive=True,
@@ -46,7 +46,7 @@ def test_select_dynamic_int8_linears_aggressive() -> None:
     assert set(selected) == {"time_embed", "attn", "ff", "attn_norm.linear", "proj_out"}
 
 
-def test_select_dynamic_int8_linears_rejects_invalid_threshold() -> None:
+def test_select_generator_quant_linears_rejects_invalid_threshold() -> None:
     model = _ToyGenerator()
     with pytest.raises(ValueError, match="positive"):
-        select_dynamic_int8_linears(model, min_weight_elements=0)
+        select_generator_quant_linears(model, min_weight_elements=0)
