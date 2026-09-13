@@ -39,6 +39,22 @@ def test_cpu_profile_uses_memory_optimized_conditioner() -> None:
     assert config.vae.compile is True
 
 
+def test_quant_sweep_profiles_load() -> None:
+    expected = {
+        "cpu-q16.toml": ("none", "int8"),
+        "cpu-q8.toml": ("int8-weight-only", "int8"),
+        "cpu-q4.toml": ("int4-weight-only", "int8"),
+        "cpu-g16.toml": ("int8-weight-only", "none"),
+        "cpu-g8.toml": ("int8-weight-only", "int8-weight-only"),
+        "cpu-g4.toml": ("int8-weight-only", "int4-weight-only"),
+    }
+    for filename, (conditioner_quantization, generator_quantization) in expected.items():
+        config = RuntimeConfig.from_toml(Path("profiles/sweep") / filename)
+        assert config.conditioner.quantization == conditioner_quantization
+        assert config.generator.quantization == generator_quantization
+        assert config.vae.compile is False
+
+
 def test_unknown_configuration_keys_are_rejected() -> None:
     try:
         RuntimeConfig.from_dict({"generator": {"quantizaton": "int8"}})
