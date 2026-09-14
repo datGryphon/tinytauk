@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: $0 REFERENCE_WAV [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+REFERENCE_WAV="$1"
+OUTPUT_DIR="${2:-benchmarks/results/text-ref}"
+PYTHON="$ROOT/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec env \
+  PROFILE="${PROFILE:-profiles/cpu.toml}" \
+  GEN_SECONDS="${GEN_SECONDS:-5}" \
+  SEEDS="${SEEDS:-42,43}" \
+  FIRST_MODE="${FIRST_MODE:-text}" \
+  TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully, loaded the model, and returned a clean health check.}" \
+  "$PYTHON" - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+from tinytauk.reference import memory_sample
+
+reference = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+output_dir.mkdir(parents=True, exist_ok=True)
+profile = Path(os.environ["PROFILE"])
+seconds = float(os.environ["GEN_SECONDS"])
+seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
+first_mode = os.environ["FIRST_MODE"].strip().lower()
+target_text = os.environ["TARGET_TEXT"].strip()
+
+if not profile.is_file():
+    raise SystemExit(f"Missing profile: {profile}")
+if not reference.is_file():
+    raise SystemExit(f"Missing reference audio: {reference}")
+if not math.isfinite(seconds) or seconds <= 0:
+    raise SystemExit("GEN_SECONDS must be a positive finite number")
+if not seeds:
+    raise SystemExit("SEEDS must contain at least one integer")
+if first_mode not in {"text", "reference"}:
+    raise SystemExit("FIRST_MODE must be text or reference")
+if not target_text:
+    raise SystemExit("TARGET_TEXT must not be empty")
+
+instruction = f'Speak the following sentence clearly and naturally: "{target_text}"'
+word_count = len(target_text.split())
+implied_wpm = word_count * 60.0 / seconds
+
+before = memory_sample()
+load_started = time.perf_counter()
+engine = TinyTAuK.from_config(profile)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+target_latent_frames = int(
+    math.ceil(seconds * engine.generator.target_sample_rate / engine.generator.downsample_rate)
+)
+
+conditionings: dict[str, Any] = {}
+conditioning_results: dict[str, dict[str, Any]] = {}
+other_mode = "reference" if first_mode == "text" else "text"
+condition_order = (first_mode, other_mode)
+
+for mode in condition_order:
+    started = time.perf_counter()
+    conditioning = engine.condition(
+        instruction,
+        reference_audio=reference if mode == "reference" else None,
+        seed=seeds[0],
+    )
+    wall_seconds = time.perf_counter() - started
+    memory = memory_sample()
+    conditionings[mode] = conditioning
+    conditioning_results[mode] = {
+        "wall_seconds": wall_seconds,
+        "stage_seconds": conditioning.stage_seconds,
+        "values_shape": list(conditioning.values.shape),
+        "attention_mask_shape": (
+            list(conditioning.attention_mask.shape)
+            if isinstance(conditioning.attention_mask, torch.Tensor)
+            else None
+        ),
+        "reference_latent_frames": (
+            int(conditioning.reference_lengths[0])
+            if isinstance(conditioning.reference_lengths, torch.Tensor)
+            else 0
+        ),
+        "current_rss_mb": memory.current_rss_mb,
+        "peak_rss_mb": memory.peak_rss_mb,
+    }
+
+runs: list[dict[str, Any]] = []
+for seed_index, seed in enumerate(seeds):
+    seed_order = list(condition_order)
+    if seed_index % 2 == 1:
+        seed_order.reverse()
+
+    for order_index, mode in enumerate(seed_order):
+        started = time.perf_counter()
+        result = engine.generate_conditioned(
+            conditionings[mode],
+            gen_seconds=seconds,
+            seed=seed,
+        )
+        observed_wall = time.perf_counter() - started
+        memory = memory_sample()
+        if not torch.isfinite(result.audio).all():
+            raise RuntimeError(f"{mode} seed {seed} produced NaN/Inf audio")
+
+        path = output_dir / f"{mode}-seed-{seed}.wav"
+        torchaudio.save(str(path), result.audio, result.sample_rate)
+        runs.append(
+            {
+                "mode": mode,
+                "seed": seed,
+                "order_index": order_index,
+                "output": str(path),
+                "observed_wall_seconds": observed_wall,
+                "engine_wall_seconds": result.wall_seconds,
+                "generated_seconds": result.generated_seconds,
+                "rtf": result.wall_seconds / result.generated_seconds,
+                "stage_seconds": result.stage_seconds,
+                "peak_amplitude": float(result.audio.abs().max()),
+                "rms": float(torch.sqrt(torch.mean(result.audio.square()))),
+                "current_rss_mb": memory.current_rss_mb,
+                "peak_rss_mb": memory.peak_rss_mb,
+            }
+        )
+
+
+def aggregate(mode: str) -> dict[str, float | int]:
+    entries = [entry for entry in runs if entry["mode"] == mode]
+    return {
+        "runs": len(entries),
+        "median_wall_seconds": statistics.median(
+            float(entry["engine_wall_seconds"]) for entry in entries
+        ),
+        "median_generator_seconds": statistics.median(
+            float(entry["stage_seconds"]["generator"]) for entry in entries
+        ),
+        "median_vae_seconds": statistics.median(
+            float(entry["stage_seconds"]["vae"]) for entry in entries
+        ),
+        "median_rtf": statistics.median(float(entry["rtf"]) for entry in entries),
+        "median_current_rss_mb": statistics.median(
+            float(entry["current_rss_mb"]) for entry in entries
+        ),
+        "median_rms": statistics.median(float(entry["rms"]) for entry in entries),
+        "median_peak_amplitude": statistics.median(
+            float(entry["peak_amplitude"]) for entry in entries
+        ),
+    }
+
+text_summary = aggregate("text")
+reference_summary = aggregate("reference")
+comparison = {
+    "reference_to_text_generator_ratio": (
+        float(reference_summary["median_generator_seconds"])
+        / float(text_summary["median_generator_seconds"])
+    ),
+    "reference_to_text_wall_ratio": (
+        float(reference_summary["median_wall_seconds"])
+        / float(text_summary["median_wall_seconds"])
+    ),
+    "reference_to_text_conditioning_ratio": (
+        float(conditioning_results["reference"]["wall_seconds"])
+        / float(conditioning_results["text"]["wall_seconds"])
+    ),
+}
+
+payload = {
+    "git_rev": os.popen("git rev-parse HEAD").read().strip(),
+    "profile": str(profile),
+    "reference": str(reference),
+    "target_text": target_text,
+    "word_count": word_count,
+    "gen_seconds_requested": seconds,
+    "implied_words_per_minute": implied_wpm,
+    "target_latent_frames": target_latent_frames,
+    "seeds": list(seeds),
+    "first_mode": first_mode,
+    "torch_version": torch.__version__,
+    "conditioner_quantization": engine.config.conditioner.quantization,
+    "generator_quantization": engine.config.generator.quantization,
+    "generator_quantized_engine": engine.generator.quantized_engine,
+    "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
+    "load_seconds": load_seconds,
+    "load_stage_seconds": engine.load_stage_seconds,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_after_load_mb": after_load.peak_rss_mb,
+    "conditioning": conditioning_results,
+    "runs": runs,
+    "summary": {
+        "text": text_summary,
+        "reference": reference_summary,
+        "comparison": comparison,
+    },
+    "peak_rss_mb": max(
+        after_load.peak_rss_mb,
+        *(float(value["peak_rss_mb"]) for value in conditioning_results.values()),
+        *(float(entry["peak_rss_mb"]) for entry in runs),
+    ),
+}
+
+print("\n================ PAIRED TEXT/REFERENCE SUMMARY ================")
+print(
+    f"target={word_count} words / {seconds:.1f}s ({implied_wpm:.1f} WPM), "
+    f"target_frames={target_latent_frames}, "
+    f"reference_frames={conditioning_results['reference']['reference_latent_frames']}"
+)
+print(
+    f"text: generator={text_summary['median_generator_seconds']:.3f}s "
+    f"wall={text_summary['median_wall_seconds']:.3f}s"
+)
+print(
+    f"reference: generator={reference_summary['median_generator_seconds']:.3f}s "
+    f"wall={reference_summary['median_wall_seconds']:.3f}s"
+)
+print(
+    "reference/text generator ratio="
+    f"{comparison['reference_to_text_generator_ratio']:.3f}x"
+)
+
+text = json.dumps(payload, indent=2, sort_keys=True)
+print(text)
+(output_dir / "result.json").write_text(text + "\n", encoding="utf-8")
+PY
