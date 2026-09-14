@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+PYTHON="$ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+RESULT_ROOT="${RESULT_ROOT:-benchmarks/results/vae-dtype-sweep}"
+DTYPES="${DTYPES:-fp32 bf16}"
+RUNS="${RUNS:-3}"
+
+status=0
+for dtype in $DTYPES; do
+  echo
+  echo "================ VAE $dtype ================"
+  if ! DTYPE="$dtype" RUNS="$RUNS" OUT_DIR="$RESULT_ROOT/$dtype" "$PYTHON" - <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.reference import memory_sample, resolve_auk_snapshot
+from tinytauk.vae.pytorch import PyTorchVAE
+
+dtype = os.environ["DTYPE"]
+runs_requested = int(os.environ["RUNS"])
+out_dir = Path(os.environ["OUT_DIR"])
+out_dir.mkdir(parents=True, exist_ok=True)
+if runs_requested < 1:
+    raise SystemExit("RUNS must be positive")
+
+oracle_dir = Path("benchmarks/results/reference-oracle")
+latent_path = oracle_dir / "sampled_latent.pt"
+wav_path = oracle_dir / "reference.wav"
+if not latent_path.is_file() or not wav_path.is_file():
+    raise SystemExit("Missing oracle artifacts; run bash scripts/reference-oracle first.")
+
+config_path, _ = resolve_auk_snapshot("tencent/AuK-Flash")
+snapshot = config_path.parent
+before = memory_sample()
+load_started = time.perf_counter()
+vae = PyTorchVAE(
+    ModelConfig(),
+    ComponentConfig(
+        backend="pytorch",
+        device="cpu",
+        dtype=dtype,
+        quantization="none",
+        compile=False,
+    ),
+    model_snapshot=snapshot,
+)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+latents = torch.load(latent_path, map_location="cpu", weights_only=True)
+expected, expected_sr = torchaudio.load(wav_path)
+entries = []
+actual = torch.empty(0)
+for index in range(runs_requested):
+    started = time.perf_counter()
+    actual = vae.decode(latents).squeeze(0).cpu()
+    seconds = time.perf_counter() - started
+    sample = memory_sample()
+    entries.append(
+        {
+            "index": index,
+            "decode_seconds": seconds,
+            "current_rss_mb": sample.current_rss_mb,
+            "peak_rss_mb": sample.peak_rss_mb,
+        }
+    )
+
+shape_match = actual.shape == expected.shape
+sample_rate_match = vae.sample_rate == expected_sr
+finite = bool(torch.isfinite(actual).all())
+if shape_match and actual.numel():
+    difference = actual.float() - expected.float()
+    absolute = difference.abs()
+    max_abs_error = float(absolute.max())
+    mean_abs_error = float(absolute.mean())
+    noise_rms = float(torch.sqrt(torch.mean(difference.square())))
+    signal_rms = float(torch.sqrt(torch.mean(expected.float().square())))
+    snr_db = 20.0 * math.log10(signal_rms / noise_rms) if noise_rms > 0 else math.inf
+    actual_centered = actual.float().flatten() - actual.float().mean()
+    expected_centered = expected.float().flatten() - expected.float().mean()
+    denominator = torch.linalg.vector_norm(actual_centered) * torch.linalg.vector_norm(expected_centered)
+    correlation = float(torch.dot(actual_centered, expected_centered) / denominator) if denominator > 0 else None
+else:
+    max_abs_error = None
+    mean_abs_error = None
+    noise_rms = None
+    signal_rms = None
+    snr_db = None
+    correlation = None
+
+warm_entries = entries[1:] if len(entries) > 1 else entries
+decoder_parameter_bytes = sum(
+    parameter.numel() * parameter.element_size() for parameter in vae.decoder.parameters()
+)
+result = {
+    "dtype": dtype,
+    "runs": entries,
+    "load_seconds": load_seconds,
+    "first_decode_seconds": entries[0]["decode_seconds"],
+    "median_warm_decode_seconds": statistics.median(
+        float(entry["decode_seconds"]) for entry in warm_entries
+    ),
+    "realtime_factor_warm": statistics.median(
+        float(entry["decode_seconds"]) for entry in warm_entries
+    ) / (actual.shape[-1] / vae.sample_rate),
+    "decoder_parameter_mb": decoder_parameter_bytes / (1024 * 1024),
+    "shape": list(actual.shape),
+    "expected_shape": list(expected.shape),
+    "shape_match": shape_match,
+    "sample_rate": vae.sample_rate,
+    "expected_sample_rate": expected_sr,
+    "sample_rate_match": sample_rate_match,
+    "finite": finite,
+    "max_abs_error": max_abs_error,
+    "mean_abs_error": mean_abs_error,
+    "noise_rms": noise_rms,
+    "signal_rms": signal_rms,
+    "snr_db": snr_db,
+    "correlation": correlation,
+    "output_rms": float(torch.sqrt(torch.mean(actual.float().square()))),
+    "output_peak": float(actual.float().abs().max()),
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_mb": max(
+        after_load.peak_rss_mb,
+        *(float(entry["peak_rss_mb"]) for entry in entries),
+    ),
+}
+text = json.dumps(result, indent=2, sort_keys=True)
+print(text)
+(out_dir / "result.json").write_text(text + "\n", encoding="utf-8")
+torchaudio.save(str(out_dir / "audio.wav"), actual, vae.sample_rate)
+
+if not (shape_match and sample_rate_match and finite):
+    raise SystemExit(1)
+PY
+  then
+    echo "VAE $dtype failed" >&2
+    status=1
+  fi
+done
+
+exit "$status"
