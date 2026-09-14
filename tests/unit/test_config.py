@@ -41,20 +41,24 @@ def test_cpu_profile_uses_memory_optimized_conditioner() -> None:
 
 def test_quant_sweep_profiles_load() -> None:
     expected = {
-        "cpu-q16.toml": ("none", "int8", "fp32"),
-        "cpu-q8.toml": ("int8-weight-only", "int8", "fp32"),
-        "cpu-q4.toml": ("int4-weight-only", "int8", "fp32"),
-        "cpu-q4-v16.toml": ("int4-weight-only", "int8", "bf16"),
-        "cpu-g16.toml": ("int8-weight-only", "none", "fp32"),
-        "cpu-g8.toml": ("int8-weight-only", "int8-weight-only", "fp32"),
-        "cpu-g4.toml": ("int8-weight-only", "int4-weight-only", "fp32"),
+        "cpu-q16.toml": ("none", "int8", "fp32", False),
+        "cpu-q8.toml": ("int8-weight-only", "int8", "fp32", False),
+        "cpu-q4.toml": ("int4-weight-only", "int8", "fp32", False),
+        "cpu-q4-v16.toml": ("int4-weight-only", "int8", "bf16", False),
+        "cpu-q4-final.toml": ("int4-weight-only", "int8", "fp32", True),
+        "cpu-g16.toml": ("int8-weight-only", "none", "fp32", False),
+        "cpu-g8.toml": ("int8-weight-only", "int8-weight-only", "fp32", False),
+        "cpu-g4.toml": ("int8-weight-only", "int4-weight-only", "fp32", False),
     }
-    for filename, (conditioner_quantization, generator_quantization, vae_dtype) in expected.items():
+    for (
+        filename,
+        (conditioner_quantization, generator_quantization, vae_dtype, vae_compile),
+    ) in expected.items():
         config = RuntimeConfig.from_toml(Path("profiles/sweep") / filename)
         assert config.conditioner.quantization == conditioner_quantization
         assert config.generator.quantization == generator_quantization
         assert config.vae.dtype == vae_dtype
-        assert config.vae.compile is False
+        assert config.vae.compile is vae_compile
 
 
 def test_unknown_configuration_keys_are_rejected() -> None:
