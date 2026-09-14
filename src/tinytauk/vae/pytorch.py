@@ -39,13 +39,13 @@ def _resolved_mapping(raw: Any) -> dict[str, Any]:
 
 
 class _DecodeGraph(nn.Module):
-    def __init__(self, decoder: BigVGANDecoder) -> None:
+    def __init__(self, decoder: BigVGANDecoder, dtype: torch.dtype) -> None:
         super().__init__()
         self.decoder = decoder
+        self.dtype = dtype
 
     def forward(self, latents: torch.Tensor) -> torch.Tensor:
-        value = latents.to(dtype=self.decoder.global_mean.dtype)
-        value = value * torch.sqrt(self.decoder.global_log_std) + self.decoder.global_mean
+        value = self.decoder.denormalize(latents).to(dtype=self.dtype)
         value = value.permute(0, 2, 1)
         return self.decoder.forward(value)
 
@@ -115,7 +115,7 @@ class PyTorchVAE:
         self._encoder: BigVGANEncoder | None = None
 
         if config.compile:
-            graph = _DecodeGraph(self.decoder).eval()
+            graph = _DecodeGraph(self.decoder, self.dtype).eval()
             if config.compile_mode == "default":
                 self._decode_graph = torch.compile(
                     graph,
@@ -183,6 +183,6 @@ class PyTorchVAE:
         if self._decode_graph is not None:
             return self._decode_graph(value).to(torch.float32)
 
-        value = value * torch.sqrt(self.decoder.global_log_std) + self.decoder.global_mean
+        value = self.decoder.denormalize(value).to(dtype=self.dtype)
         value = value.permute(0, 2, 1)
         return self.decoder.forward(value).to(torch.float32)
