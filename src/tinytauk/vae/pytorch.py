@@ -19,6 +19,11 @@ from tinytauk.types import AudioInput
 from .bigvgan import BigVGANDecoder, BigVGANDecoderConfig
 from .encoder import BigVGANEncoder, BigVGANEncoderConfig
 
+_DTYPE_MAP: dict[str, torch.dtype] = {
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+}
+
 
 def _resolved_mapping(raw: Any) -> dict[str, Any]:
     resolved = OmegaConf.to_container(raw, resolve=True)
@@ -39,14 +44,14 @@ class _DecodeGraph(nn.Module):
         self.decoder = decoder
 
     def forward(self, latents: torch.Tensor) -> torch.Tensor:
-        value = latents.float()
-        value = self.decoder.denormalize(value)
+        value = latents.to(dtype=self.decoder.global_mean.dtype)
+        value = value * torch.sqrt(self.decoder.global_log_std) + self.decoder.global_mean
         value = value.permute(0, 2, 1)
         return self.decoder.forward(value)
 
 
 class PyTorchVAE:
-    """BigVGAN decode path plus lazily loaded reference-audio encoder."""
+    """BigVGAN decoder plus a lazily loaded FP32 reference-audio encoder."""
 
     def __init__(
         self,
@@ -57,12 +62,13 @@ class PyTorchVAE:
     ) -> None:
         if config.quantization != "none":
             raise ValueError("VAE quantization is not supported")
-        if config.dtype != "fp32":
-            raise ValueError("VAE currently requires fp32")
+        if config.dtype not in _DTYPE_MAP:
+            raise ValueError("VAE supports only fp32 or bf16 decode dtype")
 
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
+        self.dtype = _DTYPE_MAP[config.dtype]
         self.snapshot = Path(model_snapshot or snapshot_download(repo_id=model.model_id))
 
         config_path = self.snapshot / "config.yaml"
@@ -103,7 +109,7 @@ class PyTorchVAE:
         self.decoder = BigVGANDecoder(decoder_config)
         self._load_decoder_weights(checkpoint_path)
         self.decoder.remove_weight_norm()
-        self.decoder = self.decoder.to(device=self.device, dtype=torch.float32).eval()
+        self.decoder = self.decoder.to(device=self.device, dtype=self.dtype).eval()
         self.decoder.requires_grad_(False)
         self._decode_graph: Callable[[torch.Tensor], torch.Tensor] | None = None
         self._encoder: BigVGANEncoder | None = None
@@ -173,10 +179,10 @@ class PyTorchVAE:
         if latents.shape[-1] != self.latent_dim:
             raise ValueError(f"latent feature dimension must be {self.latent_dim}, got {latents.shape[-1]}")
 
-        value = latents.to(device=self.device, dtype=torch.float32)
+        value = latents.to(device=self.device, dtype=self.dtype)
         if self._decode_graph is not None:
             return self._decode_graph(value).to(torch.float32)
 
-        value = self.decoder.denormalize(value)
+        value = value * torch.sqrt(self.decoder.global_log_std) + self.decoder.global_mean
         value = value.permute(0, 2, 1)
         return self.decoder.forward(value).to(torch.float32)
