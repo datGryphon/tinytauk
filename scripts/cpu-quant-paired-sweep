@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 REFERENCE_WAV" >&2
+  exit 2
+fi
+
+REFERENCE_WAV="$1"
+RESULT_ROOT="${RESULT_ROOT:-benchmarks/results/quant-paired}"
+GEN_SECONDS="${GEN_SECONDS:-5}"
+SEEDS="${SEEDS:-42,43}"
+CANDIDATES="${CANDIDATES:-g16 g8 g4}"
+FIRST_MODE="${FIRST_MODE:-text}"
+
+status=0
+for name in $CANDIDATES; do
+  profile="profiles/sweep/cpu-${name}.toml"
+  output="$RESULT_ROOT/$name"
+  echo
+  echo "================ $name paired text/reference benchmark ================"
+  if ! PROFILE="$profile" \
+      GEN_SECONDS="$GEN_SECONDS" \
+      SEEDS="$SEEDS" \
+      FIRST_MODE="$FIRST_MODE" \
+      scripts/cpu-text-ref-bench "$REFERENCE_WAV" "$output"; then
+    echo "$name paired benchmark failed" >&2
+    status=1
+  fi
+done
+
+exit "$status"
