@@ -18,6 +18,7 @@ exec env \
   GEN_SECONDS="${GEN_SECONDS:-}" \
   CHARS_PER_SECOND="${CHARS_PER_SECOND:-14}" \
   DURATION_HEADROOM="${DURATION_HEADROOM:-1.0}" \
+  TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully and returned a clean health check.}" \
   uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
 from __future__ import annotations
 
@@ -43,6 +44,7 @@ gen_seconds_raw = os.environ["GEN_SECONDS"].strip()
 gen_seconds_override = float(gen_seconds_raw) if gen_seconds_raw else None
 chars_per_second = float(os.environ["CHARS_PER_SECOND"])
 duration_headroom = float(os.environ["DURATION_HEADROOM"])
+target_text = os.environ["TARGET_TEXT"].strip()
 if not seeds:
     raise SystemExit("SEEDS must contain at least one integer")
 if gen_seconds_override is not None and (
@@ -53,13 +55,12 @@ if not math.isfinite(chars_per_second) or chars_per_second <= 0:
     raise SystemExit("CHARS_PER_SECOND must be a positive finite number")
 if not math.isfinite(duration_headroom) or duration_headroom <= 0:
     raise SystemExit("DURATION_HEADROOM must be a positive finite number")
+if not target_text:
+    raise SystemExit("TARGET_TEXT must not be empty")
 
-target_text = "The service restarted successfully and returned a clean health check."
-description = "A clear, natural speaking voice matching the reference speaker"
-instruction = (
-    f"Based on the following description: {json.dumps(description, ensure_ascii=False)}, "
-    f"generate speech content {json.dumps(target_text, ensure_ascii=False)}."
-)
+# Upstream AuK zero-shot/reference TTS contract. Do not use the no-reference
+# Instruct-TTS description template here.
+instruction = f"Say the following with the same voice: {json.dumps(target_text, ensure_ascii=False)}"
 seconds = (
     gen_seconds_override
     if gen_seconds_override is not None
@@ -106,8 +107,8 @@ for seed in seeds:
 
 payload = {
     "profile": profile or "from_pretrained",
-    "instruction_shape": "canonical-auk",
-    "description": description,
+    "instruction_shape": "upstream-zero-shot-tts",
+    "instruction": instruction,
     "target_text": target_text,
     "target_characters": len(target_text),
     "duration_mode": "fixed" if gen_seconds_override is not None else "text-derived",
