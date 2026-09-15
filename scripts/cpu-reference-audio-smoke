@@ -15,7 +15,9 @@ OUTPUT_DIR="${2:-benchmarks/results/reference-audio-smoke}"
 exec env \
   PROFILE="${PROFILE:-}" \
   SEEDS="${SEEDS:-42,43}" \
-  GEN_SECONDS="${GEN_SECONDS:-5}" \
+  GEN_SECONDS="${GEN_SECONDS:-}" \
+  CHARS_PER_SECOND="${CHARS_PER_SECOND:-14}" \
+  DURATION_HEADROOM="${DURATION_HEADROOM:-1.0}" \
   uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
 from __future__ import annotations
 
@@ -37,16 +39,33 @@ output_dir = Path(sys.argv[2])
 output_dir.mkdir(parents=True, exist_ok=True)
 profile = os.environ["PROFILE"].strip()
 seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
-seconds = float(os.environ["GEN_SECONDS"])
+gen_seconds_raw = os.environ["GEN_SECONDS"].strip()
+gen_seconds_override = float(gen_seconds_raw) if gen_seconds_raw else None
+chars_per_second = float(os.environ["CHARS_PER_SECOND"])
+duration_headroom = float(os.environ["DURATION_HEADROOM"])
 if not seeds:
     raise SystemExit("SEEDS must contain at least one integer")
-if not math.isfinite(seconds) or seconds <= 0:
-    raise SystemExit("GEN_SECONDS must be a positive finite number")
+if gen_seconds_override is not None and (
+    not math.isfinite(gen_seconds_override) or gen_seconds_override <= 0
+):
+    raise SystemExit("GEN_SECONDS must be a positive finite number when set")
+if not math.isfinite(chars_per_second) or chars_per_second <= 0:
+    raise SystemExit("CHARS_PER_SECOND must be a positive finite number")
+if not math.isfinite(duration_headroom) or duration_headroom <= 0:
+    raise SystemExit("DURATION_HEADROOM must be a positive finite number")
 
+target_text = "The service restarted successfully and returned a clean health check."
+description = "A clear, natural speaking voice matching the reference speaker"
 instruction = (
-    'Say the following with the same voice: '
-    '"The service restarted successfully and returned a clean health check."'
+    f"Based on the following description: {json.dumps(description, ensure_ascii=False)}, "
+    f"generate speech content {json.dumps(target_text, ensure_ascii=False)}."
 )
+seconds = (
+    gen_seconds_override
+    if gen_seconds_override is not None
+    else max(1.0, len(target_text) / chars_per_second * duration_headroom)
+)
+
 before = memory_sample()
 engine = TinyTAuK.from_config(profile) if profile else TinyTAuK.from_pretrained()
 after_load = memory_sample()
@@ -87,6 +106,15 @@ for seed in seeds:
 
 payload = {
     "profile": profile or "from_pretrained",
+    "instruction_shape": "canonical-auk",
+    "description": description,
+    "target_text": target_text,
+    "target_characters": len(target_text),
+    "duration_mode": "fixed" if gen_seconds_override is not None else "text-derived",
+    "gen_seconds_requested": seconds,
+    "gen_seconds_override": gen_seconds_override,
+    "chars_per_second": chars_per_second,
+    "duration_headroom": duration_headroom,
     "conditioner_quantization": engine.config.conditioner.quantization,
     "generator_quantization": engine.config.generator.quantization,
     "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
