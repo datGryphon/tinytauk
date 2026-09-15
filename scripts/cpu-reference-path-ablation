@@ -1,0 +1,253 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: $0 REFERENCE_WAV [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+REFERENCE_WAV="$1"
+OUTPUT_DIR="${2:-benchmarks/results/reference-path-ablation}"
+PYTHON="$ROOT/.venv/bin/python"
+
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing .venv; run uv sync first." >&2
+  exit 1
+fi
+
+exec env \
+  PROFILE="${PROFILE:-profiles/sweep/cpu-q8-fp32.toml}" \
+  GEN_SECONDS="${GEN_SECONDS:-4.5}" \
+  SEEDS="${SEEDS:-42,43}" \
+  TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully and returned a clean health check.}" \
+  "$PYTHON" - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import statistics
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+from tinytauk.reference import memory_sample
+from tinytauk.types import Conditioning
+
+reference = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+output_dir.mkdir(parents=True, exist_ok=True)
+profile = Path(os.environ["PROFILE"])
+gen_seconds = float(os.environ["GEN_SECONDS"])
+seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
+target_text = os.environ["TARGET_TEXT"].strip()
+
+if not profile.is_file():
+    raise SystemExit(f"Missing profile: {profile}")
+if not reference.is_file():
+    raise SystemExit(f"Missing reference audio: {reference}")
+if not math.isfinite(gen_seconds) or gen_seconds <= 0:
+    raise SystemExit("GEN_SECONDS must be a positive finite number")
+if not seeds:
+    raise SystemExit("SEEDS must contain at least one integer")
+if not target_text:
+    raise SystemExit("TARGET_TEXT must not be empty")
+
+description = "A clear, natural speaking voice"
+instruction = (
+    f"Based on the following description: {json.dumps(description, ensure_ascii=False)}, "
+    f"generate speech content {json.dumps(target_text, ensure_ascii=False)}."
+)
+
+before = memory_sample()
+load_started = time.perf_counter()
+engine = TinyTAuK.from_config(profile)
+load_seconds = time.perf_counter() - load_started
+after_load = memory_sample()
+
+conditioning_results: dict[str, dict[str, Any]] = {}
+conditionings: dict[str, Conditioning] = {}
+
+for source_name, reference_audio in (("text", None), ("reference", reference)):
+    started = time.perf_counter()
+    conditioning = engine.condition(
+        instruction,
+        reference_audio=reference_audio,
+        seed=seeds[0],
+    )
+    wall_seconds = time.perf_counter() - started
+    memory = memory_sample()
+    conditionings[source_name] = conditioning
+    conditioning_results[source_name] = {
+        "wall_seconds": wall_seconds,
+        "stage_seconds": conditioning.stage_seconds,
+        "values_shape": list(conditioning.values.shape),
+        "attention_mask_shape": (
+            list(conditioning.attention_mask.shape)
+            if isinstance(conditioning.attention_mask, torch.Tensor)
+            else None
+        ),
+        "reference_latent_frames": (
+            int(conditioning.reference_lengths[0])
+            if isinstance(conditioning.reference_lengths, torch.Tensor)
+            else 0
+        ),
+        "current_rss_mb": memory.current_rss_mb,
+        "peak_rss_mb": memory.peak_rss_mb,
+    }
+
+text = conditionings["text"]
+ref = conditionings["reference"]
+
+variants: dict[str, Conditioning] = {
+    "text-baseline": Conditioning(
+        values=text.values,
+        attention_mask=text.attention_mask,
+        instruction=instruction,
+        seed=seeds[0],
+    ),
+    "qwen-audio-only": Conditioning(
+        values=ref.values,
+        attention_mask=ref.attention_mask,
+        instruction=instruction,
+        seed=seeds[0],
+    ),
+    "flux-reference-only": Conditioning(
+        values=text.values,
+        attention_mask=text.attention_mask,
+        instruction=instruction,
+        seed=seeds[0],
+        reference_latents=ref.reference_latents,
+        reference_lengths=ref.reference_lengths,
+    ),
+    "full-reference": Conditioning(
+        values=ref.values,
+        attention_mask=ref.attention_mask,
+        instruction=instruction,
+        seed=seeds[0],
+        reference_latents=ref.reference_latents,
+        reference_lengths=ref.reference_lengths,
+    ),
+}
+
+variant_metadata = {
+    "text-baseline": {"qwen_audio": False, "flux_reference": False},
+    "qwen-audio-only": {"qwen_audio": True, "flux_reference": False},
+    "flux-reference-only": {"qwen_audio": False, "flux_reference": True},
+    "full-reference": {"qwen_audio": True, "flux_reference": True},
+}
+
+mode_names = tuple(variants)
+runs: list[dict[str, Any]] = []
+for seed_index, seed in enumerate(seeds):
+    offset = seed_index % len(mode_names)
+    seed_order = mode_names[offset:] + mode_names[:offset]
+    for order_index, mode in enumerate(seed_order):
+        started = time.perf_counter()
+        result = engine.generate_conditioned(
+            variants[mode],
+            gen_seconds=gen_seconds,
+            seed=seed,
+        )
+        observed_wall = time.perf_counter() - started
+        memory = memory_sample()
+        if not torch.isfinite(result.audio).all():
+            raise RuntimeError(f"{mode} seed {seed} produced NaN/Inf audio")
+
+        path = output_dir / f"{mode}-seed-{seed}.wav"
+        torchaudio.save(str(path), result.audio, result.sample_rate)
+        runs.append(
+            {
+                "mode": mode,
+                "seed": seed,
+                "order_index": order_index,
+                "output": str(path),
+                "observed_wall_seconds": observed_wall,
+                "engine_wall_seconds": result.wall_seconds,
+                "generated_seconds": result.generated_seconds,
+                "stage_seconds": result.stage_seconds,
+                "rtf": result.wall_seconds / result.generated_seconds,
+                "peak_amplitude": float(result.audio.abs().max()),
+                "rms": float(torch.sqrt(torch.mean(result.audio.square()))),
+                "current_rss_mb": memory.current_rss_mb,
+                "peak_rss_mb": memory.peak_rss_mb,
+                **variant_metadata[mode],
+            }
+        )
+
+
+def aggregate(mode: str) -> dict[str, float | int]:
+    entries = [entry for entry in runs if entry["mode"] == mode]
+    return {
+        "runs": len(entries),
+        "median_wall_seconds": statistics.median(
+            float(entry["engine_wall_seconds"]) for entry in entries
+        ),
+        "median_generator_seconds": statistics.median(
+            float(entry["stage_seconds"]["generator"]) for entry in entries
+        ),
+        "median_vae_seconds": statistics.median(
+            float(entry["stage_seconds"]["vae"]) for entry in entries
+        ),
+        "median_rtf": statistics.median(float(entry["rtf"]) for entry in entries),
+        "median_rms": statistics.median(float(entry["rms"]) for entry in entries),
+        "median_peak_amplitude": statistics.median(
+            float(entry["peak_amplitude"]) for entry in entries
+        ),
+    }
+
+summary = {mode: aggregate(mode) for mode in mode_names}
+payload = {
+    "git_rev": os.popen("git rev-parse HEAD").read().strip(),
+    "profile": str(profile),
+    "reference": str(reference),
+    "instruction_shape": "canonical-auk",
+    "description": description,
+    "target_text": target_text,
+    "target_characters": len(target_text),
+    "gen_seconds_requested": gen_seconds,
+    "seeds": list(seeds),
+    "torch_version": torch.__version__,
+    "conditioner_quantization": engine.config.conditioner.quantization,
+    "generator_quantization": engine.config.generator.quantization,
+    "generator_quantized_engine": engine.generator.quantized_engine,
+    "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
+    "load_seconds": load_seconds,
+    "load_stage_seconds": engine.load_stage_seconds,
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_after_load_mb": after_load.peak_rss_mb,
+    "conditioning": conditioning_results,
+    "variants": variant_metadata,
+    "runs": runs,
+    "summary": summary,
+    "peak_rss_mb": max(
+        after_load.peak_rss_mb,
+        *(float(value["peak_rss_mb"]) for value in conditioning_results.values()),
+        *(float(entry["peak_rss_mb"]) for entry in runs),
+    ),
+}
+
+print("\n================ REFERENCE PATH ABLATION ================")
+print(f"target={target_text!r}")
+print(f"duration={gen_seconds:.2f}s profile={profile}")
+for mode in mode_names:
+    item = summary[mode]
+    print(
+        f"{mode:20s} generator={item['median_generator_seconds']:.3f}s "
+        f"wall={item['median_wall_seconds']:.3f}s "
+        f"rms={item['median_rms']:.5f}"
+    )
+
+text_payload = json.dumps(payload, indent=2, sort_keys=True)
+print(text_payload)
+(output_dir / "result.json").write_text(text_payload + "\n", encoding="utf-8")
+PY
