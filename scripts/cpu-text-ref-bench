@@ -20,7 +20,9 @@ fi
 
 exec env \
   PROFILE="${PROFILE:-profiles/cpu.toml}" \
-  GEN_SECONDS="${GEN_SECONDS:-5}" \
+  GEN_SECONDS="${GEN_SECONDS:-}" \
+  CHARS_PER_SECOND="${CHARS_PER_SECOND:-14}" \
+  DURATION_HEADROOM="${DURATION_HEADROOM:-1.0}" \
   SEEDS="${SEEDS:-42,43}" \
   FIRST_MODE="${FIRST_MODE:-text}" \
   TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully, loaded the model, and returned a clean health check.}" \
@@ -46,7 +48,10 @@ reference = Path(sys.argv[1])
 output_dir = Path(sys.argv[2])
 output_dir.mkdir(parents=True, exist_ok=True)
 profile = Path(os.environ["PROFILE"])
-seconds = float(os.environ["GEN_SECONDS"])
+gen_seconds_raw = os.environ["GEN_SECONDS"].strip()
+gen_seconds_override = float(gen_seconds_raw) if gen_seconds_raw else None
+chars_per_second = float(os.environ["CHARS_PER_SECOND"])
+duration_headroom = float(os.environ["DURATION_HEADROOM"])
 seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
 first_mode = os.environ["FIRST_MODE"].strip().lower()
 target_text = os.environ["TARGET_TEXT"].strip()
@@ -55,8 +60,14 @@ if not profile.is_file():
     raise SystemExit(f"Missing profile: {profile}")
 if not reference.is_file():
     raise SystemExit(f"Missing reference audio: {reference}")
-if not math.isfinite(seconds) or seconds <= 0:
-    raise SystemExit("GEN_SECONDS must be a positive finite number")
+if gen_seconds_override is not None and (
+    not math.isfinite(gen_seconds_override) or gen_seconds_override <= 0
+):
+    raise SystemExit("GEN_SECONDS must be a positive finite number when set")
+if not math.isfinite(chars_per_second) or chars_per_second <= 0:
+    raise SystemExit("CHARS_PER_SECOND must be a positive finite number")
+if not math.isfinite(duration_headroom) or duration_headroom <= 0:
+    raise SystemExit("DURATION_HEADROOM must be a positive finite number")
 if not seeds:
     raise SystemExit("SEEDS must contain at least one integer")
 if first_mode not in {"text", "reference"}:
@@ -64,7 +75,16 @@ if first_mode not in {"text", "reference"}:
 if not target_text:
     raise SystemExit("TARGET_TEXT must not be empty")
 
-instruction = f'Speak the following sentence clearly and naturally: "{target_text}"'
+seconds = (
+    gen_seconds_override
+    if gen_seconds_override is not None
+    else max(1.0, len(target_text) / chars_per_second * duration_headroom)
+)
+description = "A clear, natural speaking voice"
+instruction = (
+    f"Based on the following description: {json.dumps(description, ensure_ascii=False)}, "
+    f"generate speech content {json.dumps(target_text, ensure_ascii=False)}."
+)
 word_count = len(target_text.split())
 implied_wpm = word_count * 60.0 / seconds
 
@@ -194,9 +214,16 @@ payload = {
     "git_rev": os.popen("git rev-parse HEAD").read().strip(),
     "profile": str(profile),
     "reference": str(reference),
+    "instruction_shape": "canonical-auk",
+    "description": description,
     "target_text": target_text,
+    "target_characters": len(target_text),
     "word_count": word_count,
+    "duration_mode": "fixed" if gen_seconds_override is not None else "text-derived",
     "gen_seconds_requested": seconds,
+    "gen_seconds_override": gen_seconds_override,
+    "chars_per_second": chars_per_second,
+    "duration_headroom": duration_headroom,
     "implied_words_per_minute": implied_wpm,
     "target_latent_frames": target_latent_frames,
     "seeds": list(seeds),
@@ -227,8 +254,8 @@ payload = {
 
 print("\n================ PAIRED TEXT/REFERENCE SUMMARY ================")
 print(
-    f"target={word_count} words / {seconds:.1f}s ({implied_wpm:.1f} WPM), "
-    f"target_frames={target_latent_frames}, "
+    f"target={len(target_text)} chars/{word_count} words / {seconds:.2f}s "
+    f"({implied_wpm:.1f} WPM), target_frames={target_latent_frames}, "
     f"reference_frames={conditioning_results['reference']['reference_latent_frames']}"
 )
 print(
