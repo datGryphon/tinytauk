@@ -109,6 +109,11 @@ class TransformersConditioner:
             thinker = thinker.to(torch.float32)
         if config.quantization == "none":
             thinker = thinker.to(self.device)
+        elif thinker.audio_tower is not None:
+            # TorchAO leaves the audio tower unquantized. Keep this Conv-heavy
+            # path in FP32 even when the quantized text body uses BF16 activations;
+            # CPU BF16 convolutions are substantially slower on our reference path.
+            thinker.audio_tower = thinker.audio_tower.to(device=self.device, dtype=torch.float32)
         self.thinker: Any = thinker.eval()
         self.thinker.requires_grad_(False)
 

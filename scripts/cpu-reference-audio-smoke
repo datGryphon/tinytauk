@@ -50,6 +50,12 @@ instruction = (
 before = memory_sample()
 engine = TinyTAuK.from_config(profile) if profile else TinyTAuK.from_pretrained()
 after_load = memory_sample()
+audio_tower = engine.conditioner.thinker.audio_tower
+audio_tower_dtype = (
+    str(next(audio_tower.parameters()).dtype)
+    if audio_tower is not None
+    else None
+)
 
 condition_started = time.perf_counter()
 conditioning = engine.condition(
@@ -87,6 +93,8 @@ for seed in seeds:
 
 payload = {
     "profile": profile or "from_pretrained",
+    "conditioner_dtype": engine.config.conditioner.dtype,
+    "conditioner_audio_tower_dtype": audio_tower_dtype,
     "conditioner_quantization": engine.config.conditioner.quantization,
     "generator_quantization": engine.config.generator.quantization,
     "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
