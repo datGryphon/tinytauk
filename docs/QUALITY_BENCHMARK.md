@@ -9,6 +9,14 @@ Each case in `benchmarks/quality/cases.json` defines:
 - generation duration;
 - deterministic seed.
 
+The corpus uses AuK's canonical speech instruction shape:
+
+```text
+Based on the following description: "<style>", generate speech content "<target>".
+```
+
+Generation horizons are sized from target text at 14 characters/second unless a benchmark explicitly overrides `GEN_SECONDS`. Fixed horizons should only be used deliberately; do not compare semantic quality across candidates with a target that is too long for the requested duration.
+
 ## Render
 
 ```bash
@@ -58,4 +66,4 @@ renderer.
 
 WER/CER alone are not enough. Keep a candidate only when it combines useful
 performance or memory savings with acceptable intelligibility, listening
-quality, and acoustic regression metrics.
+quality, and acoustic regression metrics. Semantic correctness is a release gate; waveform statistics and lack of clipping are not substitutes for checking the requested words.
