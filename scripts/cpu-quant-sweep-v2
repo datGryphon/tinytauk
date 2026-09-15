@@ -6,7 +6,9 @@ cd "$ROOT"
 
 REFERENCE_WAV="${1:-}"
 RESULT_ROOT="${RESULT_ROOT:-benchmarks/results/quant-sweep-v2}"
-GEN_SECONDS="${GEN_SECONDS:-3}"
+GEN_SECONDS="${GEN_SECONDS:-}"
+CHARS_PER_SECOND="${CHARS_PER_SECOND:-14}"
+DURATION_HEADROOM="${DURATION_HEADROOM:-1.0}"
 WARM_RUNS="${WARM_RUNS:-1}"
 SEEDS="${SEEDS:-42}"
 CANDIDATES="${CANDIDATES:-q16 q8 q4 g16 g8 g4}"
@@ -29,6 +31,8 @@ if [[ "$MODE" == "text" || "$MODE" == "both" ]]; then
     echo "================ $name text benchmark ================"
     if ! PROFILE="$profile" \
         GEN_SECONDS="$GEN_SECONDS" \
+        CHARS_PER_SECOND="$CHARS_PER_SECOND" \
+        DURATION_HEADROOM="$DURATION_HEADROOM" \
         WARM_RUNS="$WARM_RUNS" \
         OUT_DIR="$RESULT_ROOT/$name/text" \
         bash scripts/cpu-bench; then
@@ -45,6 +49,8 @@ if [[ "$MODE" == "reference" || "$MODE" == "both" ]]; then
     echo "================ $name reference benchmark ================"
     if ! PROFILE="$profile" \
         GEN_SECONDS="$GEN_SECONDS" \
+        CHARS_PER_SECOND="$CHARS_PER_SECOND" \
+        DURATION_HEADROOM="$DURATION_HEADROOM" \
         SEEDS="$SEEDS" \
         scripts/cpu-reference-audio-smoke \
         "$REFERENCE_WAV" "$RESULT_ROOT/$name/reference"; then
