@@ -31,6 +31,28 @@ def tensor_stats(value: torch.Tensor) -> dict[str, object]:
     return result
 
 
+def tensor_probe(value: torch.Tensor, max_elements: int = 65536) -> torch.Tensor:
+    flat = value.detach().cpu().reshape(-1)
+    if flat.numel() <= max_elements:
+        return flat.clone()
+    step = max(1, math.ceil(flat.numel() / max_elements))
+    return flat[::step][:max_elements].clone()
+
+
+def trace_encoder(encoder: torch.nn.Module, audio: torch.Tensor) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    tensors: dict[str, torch.Tensor] = {"encoder_input_probe": tensor_probe(audio)}
+    first_conv = encoder.audio_encoder.generator[0].layer
+    tensors["encoder_first_weight_g"] = first_conv.weight_g.detach().cpu().clone()
+    tensors["encoder_first_weight_v"] = first_conv.weight_v.detach().cpu().clone()
+    tensors["encoder_first_bias"] = first_conv.bias.detach().cpu().clone()
+
+    value = audio.float()
+    for index, module in enumerate(encoder.audio_encoder.generator):
+        value = module(value)
+        tensors[f"encoder_layer_{index:02d}_probe"] = tensor_probe(value)
+    return tensors, value.detach()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trace TinyTAuK against upstream AuK boundaries")
     parser.add_argument("reference")
@@ -60,7 +82,7 @@ def main() -> None:
     reference_audio = load_audio(reference, target_sample_rate=engine.vae.sample_rate)
     reference_audio = reference_audio.to(device=engine.vae.device, dtype=torch.float32).unsqueeze(0)
     reference_encoder = engine.vae._get_encoder()
-    reference_stats = reference_encoder.audio_encoder(reference_audio.float()).detach()
+    encoder_tensors, reference_stats = trace_encoder(reference_encoder, reference_audio)
 
     conditioning = engine.condition(
         instruction,
@@ -123,6 +145,7 @@ def main() -> None:
     torchaudio.save(str(output_dir / "trace.wav"), decoded, engine.vae.sample_rate)
 
     tensors = {
+        **encoder_tensors,
         "reference_stats": reference_stats.detach().cpu(),
         "reference_latents": conditioning.reference_latents.detach().cpu(),
         "reference_lengths": conditioning.reference_lengths.detach().cpu(),
