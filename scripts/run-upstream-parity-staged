@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 5 || $# -gt 7 ]]; then
-  echo "usage: $0 UPSTREAM_PY CKPT QWEN_DIR REFERENCE_WAV OUTPUT_DIR [SECONDS] [SEED]" >&2
+  echo "usage: $0 UPSTREAM_PY CKPT QWEN_DIR REFERENCE_WAV OUTPUT_DIR [GEN_SECONDS] [SEED]" >&2
   exit 2
 fi
 
@@ -11,7 +11,7 @@ CKPT="$2"
 QWEN_DIR="$3"
 REFERENCE_WAV="$4"
 OUTPUT_DIR="$5"
-SECONDS="${6:-4.5}"
+GEN_SECONDS="${6:-4.5}"
 SEED="${7:-42}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -27,7 +27,7 @@ for stage in vae conditioner flux decode; do
     --qwen "$QWEN_DIR" \
     --reference "$REFERENCE_WAV" \
     --output-dir "$OUTPUT_DIR" \
-    --seconds "$SECONDS" \
+    --seconds "$GEN_SECONDS" \
     --seed "$SEED"
 done
 
