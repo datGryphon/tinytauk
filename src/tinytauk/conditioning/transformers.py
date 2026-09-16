@@ -66,8 +66,8 @@ def _torchao_weight_only_config(quantization: str) -> Any:
 class TransformersConditioner:
     """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion.
 
-    ``upstream_parity`` reproduces AuK's BF16-load-then-FP32-promotion behavior
-    for exact reference comparisons.
+    ``upstream_parity`` reproduces AuK's unquantized BF16 Qwen load while the
+    Flux generator remains FP32. AuK does not promote the Qwen thinker to FP32.
     """
 
     def __init__(
@@ -105,8 +105,6 @@ class TransformersConditioner:
             del thinker.visual
             thinker.visual = None
 
-        if upstream_parity:
-            thinker = thinker.to(torch.float32)
         if config.quantization == "none":
             thinker = thinker.to(self.device)
         self.thinker: Any = thinker.eval()
