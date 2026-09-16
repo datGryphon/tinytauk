@@ -34,6 +34,28 @@ def _tensor_stats(value: torch.Tensor) -> dict[str, object]:
     return result
 
 
+def _tensor_probe(value: torch.Tensor, max_elements: int = 65536) -> torch.Tensor:
+    flat = value.detach().cpu().reshape(-1)
+    if flat.numel() <= max_elements:
+        return flat.clone()
+    step = max(1, math.ceil(flat.numel() / max_elements))
+    return flat[::step][:max_elements].clone()
+
+
+def _trace_encoder(vae: torch.nn.Module, audio: torch.Tensor) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+    tensors: dict[str, torch.Tensor] = {"encoder_input_probe": _tensor_probe(audio)}
+    first_conv = vae.audio_encoder.generator[0].layer
+    tensors["encoder_first_weight_g"] = first_conv.weight_g.detach().cpu().clone()
+    tensors["encoder_first_weight_v"] = first_conv.weight_v.detach().cpu().clone()
+    tensors["encoder_first_bias"] = first_conv.bias.detach().cpu().clone()
+
+    value = audio.float()
+    for index, module in enumerate(vae.audio_encoder.generator):
+        value = module(value)
+        tensors[f"encoder_layer_{index:02d}_probe"] = _tensor_probe(value)
+    return tensors, value.detach()
+
+
 def _config(ckpt: Path) -> Any:
     path = ckpt.parent / "config.yaml"
     if not path.is_file():
@@ -98,7 +120,7 @@ def _stage_vae(args: argparse.Namespace, ckpt: Path, output_dir: Path) -> None:
 
     audio = _load_reference(args.reference, int(vae_config.target_sample_rate))
     ref_audio = audio.to("cpu").unsqueeze(0)
-    reference_stats = vae.audio_encoder(ref_audio.float()).detach()
+    encoder_tensors, reference_stats = _trace_encoder(vae, ref_audio)
     ref_latent_len = ref_audio.shape[-1] // int(vae_config.downsample_rate)
     reference_lengths = torch.tensor([ref_latent_len], dtype=torch.long)
     audio_lengths = reference_lengths * int(vae_config.downsample_rate)
@@ -111,6 +133,7 @@ def _stage_vae(args: argparse.Namespace, ckpt: Path, output_dir: Path) -> None:
     reference_lengths = torch.minimum(reference_lengths, encoded_lengths.cpu())
 
     payload = {
+        **encoder_tensors,
         "reference_stats": reference_stats.cpu(),
         "reference_latents": reference_latents.detach().cpu(),
         "reference_lengths": reference_lengths.detach().cpu(),
