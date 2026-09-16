@@ -63,6 +63,7 @@ def main() -> None:
 
     ref_audio, _ = engine._load_audio(args.reference)
     ref_audio = ref_audio.to(engine.device).unsqueeze(0)
+    reference_stats = engine.vae_model.audio_encoder(ref_audio.float()).detach()
     ref_latent_len = ref_audio.shape[-1] // engine.downsample_rate
     ref_lengths = torch.tensor([ref_latent_len], dtype=torch.long, device=engine.device)
     audio_lengths = ref_lengths * engine.downsample_rate
@@ -138,6 +139,7 @@ def main() -> None:
     torchaudio.save(str(output_dir / "trace.wav"), decoded, engine.target_sample_rate)
 
     tensors = {
+        "reference_stats": reference_stats.detach().cpu(),
         "reference_latents": reference_latents.detach().cpu(),
         "reference_lengths": ref_lengths.detach().cpu(),
         "conditioner_values": conditioner_values.detach().cpu(),
