@@ -9,6 +9,7 @@ import torch
 ORDER = (
     "reference_lengths",
     "attention_mask",
+    "reference_stats",
     "reference_latents",
     "conditioner_values",
     "initial_noise",
