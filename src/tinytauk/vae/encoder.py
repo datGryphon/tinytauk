@@ -64,7 +64,11 @@ class _Conv1dS(nn.Module):
         weight_norm(self.layer)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        return self.layer.forward(inputs)
+        # Call the child module through Module.__call__, not .forward directly.
+        # Legacy torch.nn.utils.weight_norm installs a forward pre-hook that
+        # reconstructs ``weight`` from ``weight_g`` and ``weight_v``. Bypassing
+        # __call__ leaves a stale effective weight after checkpoint loading.
+        return _tensor_call(self.layer, inputs)
 
 
 class _ResStack(nn.Module):
@@ -145,7 +149,7 @@ class _Encoder(nn.Module):
         self.generator = _TensorSequential(*layers)
 
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
-        return self.generator.forward(audio)
+        return _tensor_call(self.generator, audio)
 
 
 class BigVGANEncoder(nn.Module):
