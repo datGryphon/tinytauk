@@ -19,6 +19,7 @@ _COMPONENT_KEYS = {
     "compile",
     "compile_mode",
     "compile_dynamic",
+    "upstream_parity",
 }
 
 
@@ -37,6 +38,7 @@ class ComponentConfig:
     compile: bool = False
     compile_mode: str = "default"
     compile_dynamic: bool = True
+    upstream_parity: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,7 @@ def _component(
         compile=_boolean(table, "compile", False),
         compile_mode=_string(table, "compile_mode", "default"),
         compile_dynamic=_boolean(table, "compile_dynamic", True),
+        upstream_parity=_boolean(table, "upstream_parity", False),
     )
 
 
