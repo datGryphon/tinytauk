@@ -7,6 +7,7 @@ def test_cpu_baseline_profile_loads() -> None:
     config = RuntimeConfig.from_toml(Path("profiles/cpu-baseline.toml"))
     assert config.model.model_id == "tencent/AuK-Flash"
     assert config.conditioner.device == "cpu"
+    assert config.conditioner.upstream_parity is False
     assert config.generator.backend == "pytorch"
     assert config.vae.dtype == "fp32"
     assert config.vae.compile is False
@@ -29,6 +30,29 @@ def test_component_compile_settings_load() -> None:
     assert config.vae.compile is True
     assert config.vae.compile_mode == "reduce-overhead"
     assert config.vae.compile_dynamic is False
+
+
+def test_conditioner_upstream_parity_loads() -> None:
+    config = RuntimeConfig.from_dict(
+        {
+            "conditioner": {
+                "backend": "transformers",
+                "dtype": "fp32",
+                "quantization": "none",
+                "upstream_parity": True,
+            }
+        }
+    )
+    assert config.conditioner.upstream_parity is True
+
+
+def test_upstream_parity_profile_enables_parity() -> None:
+    config = RuntimeConfig.from_toml(Path("profiles/sweep/cpu-upstream-parity.toml"))
+    assert config.conditioner.quantization == "none"
+    assert config.conditioner.upstream_parity is True
+    assert config.generator.quantization == "none"
+    assert config.vae.quantization == "none"
+    assert config.vae.compile is False
 
 
 def test_cpu_profile_uses_memory_optimized_conditioner() -> None:
