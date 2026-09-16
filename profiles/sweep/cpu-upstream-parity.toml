@@ -7,6 +7,7 @@ backend = "transformers"
 device = "cpu"
 dtype = "fp32"
 quantization = "none"
+upstream_parity = true
 
 [generator]
 backend = "pytorch"
