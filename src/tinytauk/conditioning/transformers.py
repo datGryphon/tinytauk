@@ -22,6 +22,10 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
+def _conditioner_load_dtype(config: ComponentConfig, *, upstream_parity: bool) -> torch.dtype:
+    return torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
+
+
 def _find_tensor_key(keys: Iterable[str], name: str) -> str:
     key_list = list(keys)
     if name in key_list:
@@ -92,7 +96,7 @@ class TransformersConditioner:
         if config.quantization != "none" and self.device.type != "cpu":
             raise ValueError("weight-only conditioning requires CPU")
 
-        load_dtype = torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
+        load_dtype = _conditioner_load_dtype(config, upstream_parity=upstream_parity)
         quantization_config = (
             _torchao_weight_only_config(config.quantization) if config.quantization != "none" else None
         )
