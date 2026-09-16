@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 from pathlib import Path
 
 import torch
 import torchaudio
 from auk.infer.infer_auk import AukInfer
+from safetensors.torch import load_model
 
 _FLASH_T_GRID = [0.0, 0.07612049579620361, 0.2928932309150696, 0.6173166036605835, 1.0]
 
@@ -30,6 +32,49 @@ def tensor_stats(value: torch.Tensor) -> dict[str, object]:
     return result
 
 
+def _install_memory_safe_safetensors_loader() -> None:
+    """Avoid upstream's transient full checkpoint tensor dict during parity tracing.
+
+    The released AuK loader uses load_file(...)+load_state_dict(...), which keeps
+    the already-built model and the full checkpoint tensor dictionary resident at
+    the same time. For this diagnostic we load the same safetensors directly onto
+    the same model with safetensors.torch.load_model(). This changes only loading
+    peak memory, not the model architecture, tensor values, or inference path.
+    """
+
+    original = AukInfer._load_ema_weights
+    logger = logging.getLogger("auk.infer.infer_auk")
+
+    def memory_safe_load(self: AukInfer, model: torch.nn.Module, ckpt_path: str) -> None:
+        if not ckpt_path.endswith(".safetensors"):
+            original(self, model, ckpt_path)
+            return
+
+        logger.info("Loading model checkpoint from %s with direct safetensors model loader ...", ckpt_path)
+        missing, unexpected = load_model(
+            model,
+            ckpt_path,
+            strict=False,
+            device="cpu",
+        )
+        n_missing_te = sum(1 for key in missing if key.startswith("text_encoder."))
+        n_missing_other = len(missing) - n_missing_te
+        logger.info(
+            "Loaded EMA weights | missing=%d (text_encoder.*=%d, other=%d) | unexpected=%d",
+            len(missing),
+            n_missing_te,
+            n_missing_other,
+            len(unexpected),
+        )
+        if n_missing_other:
+            examples = [key for key in missing if not key.startswith("text_encoder.")][:10]
+            logger.warning("Missing non-text-encoder keys: %s", examples)
+        if unexpected:
+            logger.warning("Unexpected keys in checkpoint: %s", unexpected[:10])
+
+    AukInfer._load_ema_weights = memory_safe_load
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trace upstream AuK at TinyTAuK parity boundaries")
     parser.add_argument("--ckpt", required=True)
@@ -50,6 +95,7 @@ def main() -> None:
     instruction = f'Say the following with the same voice: "{args.text}"'
     config_path = ckpt.parent / "config.yaml"
 
+    _install_memory_safe_safetensors_loader()
     engine = AukInfer(
         config_path=str(config_path),
         ckpt_path=str(ckpt),
@@ -160,6 +206,7 @@ def main() -> None:
         "seed": args.seed,
         "torch_version": torch.__version__,
         "diagnostic_reference_seeded": True,
+        "memory_safe_checkpoint_loader": True,
         "tensors": {name: tensor_stats(value) for name, value in tensors.items()},
     }
     (output_dir / "trace.json").write_text(
