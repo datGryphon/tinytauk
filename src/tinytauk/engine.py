@@ -39,6 +39,7 @@ class TinyTAuK:
             config.model,
             config.conditioner,
             auk_checkpoint=checkpoint_path,
+            upstream_parity=config.conditioner.upstream_parity,
         )
         self.load_stage_seconds["conditioner"] = time.perf_counter() - component_started
 
