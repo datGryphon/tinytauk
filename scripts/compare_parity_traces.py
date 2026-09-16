@@ -6,9 +6,18 @@ from pathlib import Path
 
 import torch
 
+ENCODER_ORDER = (
+    "encoder_input_probe",
+    "encoder_first_weight_g",
+    "encoder_first_weight_v",
+    "encoder_first_bias",
+    *(f"encoder_layer_{index:02d}_probe" for index in range(21)),
+)
+
 ORDER = (
     "reference_lengths",
     "attention_mask",
+    *ENCODER_ORDER,
     "reference_stats",
     "reference_latents",
     "conditioner_values",
@@ -53,28 +62,28 @@ def main() -> None:
     first_material_divergence: str | None = None
     for name in ORDER:
         if name not in local or name not in upstream:
-            print(f"{name:20s} MISSING")
+            print(f"{name:28s} MISSING")
             if first_material_divergence is None:
                 first_material_divergence = name
             continue
         left = local[name]
         right = upstream[name]
         if tuple(left.shape) != tuple(right.shape):
-            print(f"{name:20s} SHAPE local={tuple(left.shape)} upstream={tuple(right.shape)}")
+            print(f"{name:28s} SHAPE local={tuple(left.shape)} upstream={tuple(right.shape)}")
             if first_material_divergence is None:
                 first_material_divergence = name
             continue
 
         if not left.is_floating_point() and not right.is_floating_point():
             equal = bool(torch.equal(left, right))
-            print(f"{name:20s} exact={equal}")
+            print(f"{name:28s} exact={equal}")
             if not equal and first_material_divergence is None:
                 first_material_divergence = name
             continue
 
         metrics = compare_float(left, right)
         print(
-            f"{name:20s} "
+            f"{name:28s} "
             f"max_abs={metrics['max_abs']:.6g} "
             f"mean_abs={metrics['mean_abs']:.6g} "
             f"rel_l2={metrics['rel_l2']:.6g} "
