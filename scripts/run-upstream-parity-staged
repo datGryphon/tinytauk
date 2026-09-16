@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 5 || $# -gt 7 ]]; then
+  echo "usage: $0 UPSTREAM_PY CKPT QWEN_DIR REFERENCE_WAV OUTPUT_DIR [SECONDS] [SEED]" >&2
+  exit 2
+fi
+
+UPSTREAM_PY="$1"
+CKPT="$2"
+QWEN_DIR="$3"
+REFERENCE_WAV="$4"
+OUTPUT_DIR="$5"
+SECONDS="${6:-4.5}"
+SEED="${7:-42}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKER="$ROOT/scripts/upstream_parity_stage.py"
+
+rm -rf "$OUTPUT_DIR"
+mkdir -p "$OUTPUT_DIR"
+
+for stage in vae conditioner flux decode; do
+  echo "=== upstream parity stage: $stage ==="
+  "$UPSTREAM_PY" "$WORKER" "$stage" \
+    --ckpt "$CKPT" \
+    --qwen "$QWEN_DIR" \
+    --reference "$REFERENCE_WAV" \
+    --output-dir "$OUTPUT_DIR" \
+    --seconds "$SECONDS" \
+    --seed "$SEED"
+done
+
+echo "Wrote:"
+echo "  $OUTPUT_DIR/trace.pt"
+echo "  $OUTPUT_DIR/trace.json"
+echo "  $OUTPUT_DIR/trace.wav"
