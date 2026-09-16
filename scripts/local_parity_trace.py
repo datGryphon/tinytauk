@@ -9,8 +9,8 @@ import torch
 import torchaudio
 
 from tinytauk import TinyTAuK
+from tinytauk.audio import load_audio
 from tinytauk.generator.pytorch import _FLASH_T_GRID
-from tinytauk.types import GenerationRequest
 
 
 def tensor_stats(value: torch.Tensor) -> dict[str, object]:
@@ -56,6 +56,11 @@ def main() -> None:
         raise RuntimeError("local parity trace requires unquantized conditioner")
     if engine.config.generator.quantization != "none":
         raise RuntimeError("local parity trace requires unquantized generator")
+
+    reference_audio = load_audio(reference, target_sample_rate=engine.vae.sample_rate)
+    reference_audio = reference_audio.to(device=engine.vae.device, dtype=torch.float32).unsqueeze(0)
+    reference_encoder = engine.vae._get_encoder()
+    reference_stats = reference_encoder.audio_encoder(reference_audio.float()).detach()
 
     conditioning = engine.condition(
         instruction,
@@ -118,6 +123,7 @@ def main() -> None:
     torchaudio.save(str(output_dir / "trace.wav"), decoded, engine.vae.sample_rate)
 
     tensors = {
+        "reference_stats": reference_stats.detach().cpu(),
         "reference_latents": conditioning.reference_latents.detach().cpu(),
         "reference_lengths": conditioning.reference_lengths.detach().cpu(),
         "conditioner_values": conditioning.values.detach().cpu(),
