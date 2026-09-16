@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 import torchaudio
-
 from auk.infer.infer_auk import AukInfer
 
 _FLASH_T_GRID = [0.0, 0.07612049579620361, 0.2928932309150696, 0.6173166036605835, 1.0]
