@@ -46,6 +46,19 @@ def test_conditioner_upstream_parity_loads() -> None:
     assert config.conditioner.upstream_parity is True
 
 
+def test_dynamic_int8_conditioner_quantization_loads() -> None:
+    config = RuntimeConfig.from_dict(
+        {
+            "conditioner": {
+                "backend": "transformers",
+                "dtype": "bf16",
+                "quantization": "int8-dynamic",
+            }
+        }
+    )
+    assert config.conditioner.quantization == "int8-dynamic"
+
+
 def test_upstream_parity_profile_enables_parity() -> None:
     config = RuntimeConfig.from_toml(Path("profiles/sweep/cpu-upstream-parity.toml"))
     assert config.conditioner.quantization == "none"
@@ -73,6 +86,11 @@ def test_quant_sweep_profiles_load() -> None:
         "cpu-g16.toml": ("int8-weight-only", "none", "fp32", False),
         "cpu-g8.toml": ("int8-weight-only", "int8-weight-only", "fp32", False),
         "cpu-g4.toml": ("int8-weight-only", "int4-weight-only", "fp32", False),
+        "cpu-final-qwen-w4.toml": ("int4-weight-only", "none", "fp32", False),
+        "cpu-final-qwen-a8w8.toml": ("int8-dynamic", "none", "fp32", False),
+        "cpu-final-flux-bf16.toml": ("none", "none", "fp32", False),
+        "cpu-final-flux-w8.toml": ("none", "int8-weight-only", "fp32", False),
+        "cpu-final-flux-w4.toml": ("none", "int4-weight-only", "fp32", False),
     }
     for (
         filename,
