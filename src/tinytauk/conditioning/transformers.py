@@ -44,20 +44,22 @@ def _load_fusion_parameters(checkpoint_path: str | Path) -> tuple[torch.Tensor, 
     return weights, scale
 
 
-def _torchao_weight_only_config(quantization: str) -> Any:
+def _torchao_config(quantization: str) -> Any:
     try:
         torchao_quantization: Any = import_module("torchao.quantization")
         from torchao.prototype.quantization.int4 import Int4WeightOnlyOpaqueTensorConfig
         from transformers import TorchAoConfig
     except ImportError as exc:
-        raise RuntimeError("weight-only conditioning requires torchao; run `uv sync`") from exc
+        raise RuntimeError("TorchAO conditioning requires torchao; run `uv sync`") from exc
 
     if quantization == "int8-weight-only":
         quant_type = torchao_quantization.Int8WeightOnlyConfig(version=2)
     elif quantization == "int4-weight-only":
         quant_type = Int4WeightOnlyOpaqueTensorConfig(group_size=128)
+    elif quantization == "int8-dynamic":
+        quant_type = torchao_quantization.Int8DynamicActivationInt8WeightConfig()
     else:
-        raise ValueError(f"unsupported weight-only conditioner quantization: {quantization}")
+        raise ValueError(f"unsupported TorchAO conditioner quantization: {quantization}")
 
     # Reference-audio conditioning depends on the audio tower. Keep it, the
     # unused visual tower, and lm_head out of low-bit conversion.
@@ -82,10 +84,16 @@ class TransformersConditioner:
         auk_checkpoint: str | Path,
         upstream_parity: bool = False,
     ) -> None:
-        if config.quantization not in {"none", "int8-weight-only", "int4-weight-only"}:
+        supported_quantization = {
+            "none",
+            "int8-weight-only",
+            "int4-weight-only",
+            "int8-dynamic",
+        }
+        if config.quantization not in supported_quantization:
             raise ValueError(
                 "TransformersConditioner supports only none, int8-weight-only, "
-                "or int4-weight-only quantization"
+                "int4-weight-only, or int8-dynamic quantization"
             )
         if upstream_parity and config.quantization != "none":
             raise ValueError("upstream parity requires an unquantized conditioner")
@@ -94,11 +102,11 @@ class TransformersConditioner:
         self.config = config
         self.device = torch.device(config.device)
         if config.quantization != "none" and self.device.type != "cpu":
-            raise ValueError("weight-only conditioning requires CPU")
+            raise ValueError("TorchAO conditioning requires CPU")
 
         load_dtype = _conditioner_load_dtype(config, upstream_parity=upstream_parity)
         quantization_config = (
-            _torchao_weight_only_config(config.quantization) if config.quantization != "none" else None
+            _torchao_config(config.quantization) if config.quantization != "none" else None
         )
         thinker: Any = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
             model.qwen_model_id,
