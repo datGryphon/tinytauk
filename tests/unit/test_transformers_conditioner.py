@@ -7,6 +7,7 @@ from tinytauk.conditioning.transformers import (
     TransformersConditioner,
     _conditioner_load_dtype,
     _find_tensor_key,
+    _torchao_config,
 )
 from tinytauk.config import ComponentConfig, ModelConfig
 from tinytauk.types import GenerationRequest
@@ -63,3 +64,8 @@ def test_upstream_parity_keeps_qwen_bf16_even_with_fp32_profile() -> None:
 
     assert _conditioner_load_dtype(config, upstream_parity=True) is torch.bfloat16
     assert _conditioner_load_dtype(config, upstream_parity=False) is torch.float32
+
+
+def test_dynamic_int8_uses_torchao_a8w8_config() -> None:
+    config = _torchao_config("int8-dynamic")
+    assert type(config.quant_type).__name__ == "Int8DynamicActivationInt8WeightConfig"
