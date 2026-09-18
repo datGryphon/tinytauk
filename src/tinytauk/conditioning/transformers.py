@@ -61,9 +61,6 @@ class TransformersConditioner:
     ) -> None:
         if config.quantization != "none":
             raise ValueError("TransformersConditioner does not support quantized conditioning in v0.2")
-        if upstream_parity and config.quantization != "none":
-            raise ValueError("upstream parity requires an unquantized conditioner")
-
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
