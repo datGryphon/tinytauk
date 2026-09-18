@@ -26,6 +26,7 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
     "fp32": torch.float32,
 }
 
+
 def _resolved_arch(raw: Any) -> dict[str, Any]:
     resolved = OmegaConf.to_container(raw, resolve=True)
     if not isinstance(resolved, dict):
