@@ -39,7 +39,10 @@ def tensor_probe(value: torch.Tensor, max_elements: int = 65536) -> torch.Tensor
     return flat[::step][:max_elements].clone()
 
 
-def trace_encoder(encoder: torch.nn.Module, audio: torch.Tensor) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
+def trace_encoder(
+    encoder: torch.nn.Module,
+    audio: torch.Tensor,
+) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     tensors: dict[str, torch.Tensor] = {"encoder_input_probe": tensor_probe(audio)}
     first_conv = encoder.audio_encoder.generator[0].layer
     tensors["encoder_first_weight_g"] = first_conv.weight_g.detach().cpu().clone()
