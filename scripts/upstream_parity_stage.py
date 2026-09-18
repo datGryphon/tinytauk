@@ -172,8 +172,7 @@ def _stage_conditioner(args: argparse.Namespace, ckpt: Path, output_dir: Path) -
         cond_inputs = cond_inputs.to("cpu")
     else:
         cond_inputs = {
-            key: value.to("cpu") if torch.is_tensor(value) else value
-            for key, value in cond_inputs.items()
+            key: value.to("cpu") if torch.is_tensor(value) else value for key, value in cond_inputs.items()
         }
     attention_mask = cond_inputs["attention_mask"].bool()
 
