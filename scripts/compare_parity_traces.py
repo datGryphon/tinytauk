@@ -89,13 +89,8 @@ def main() -> None:
             f"rel_l2={metrics['rel_l2']:.6g} "
             f"cos={metrics['cosine']:.9f}"
         )
-        if (
-            first_material_divergence is None
-            and (
-                not math.isfinite(metrics["rel_l2"])
-                or metrics["rel_l2"] > 1e-3
-                or metrics["cosine"] < 0.99999
-            )
+        if first_material_divergence is None and (
+            not math.isfinite(metrics["rel_l2"]) or metrics["rel_l2"] > 1e-3 or metrics["cosine"] < 0.99999
         ):
             first_material_divergence = name
 
