@@ -111,9 +111,7 @@ def main() -> None:
 
     text = conditioning.values.to(device=generator.device, dtype=generator.dtype)
     context_mask = (
-        conditioning.attention_mask.to(generator.device)
-        if conditioning.attention_mask is not None
-        else None
+        conditioning.attention_mask.to(generator.device) if conditioning.attention_mask is not None else None
     )
     reference_latents, reference_mask = generator._reference_inputs(conditioning)
     times = torch.tensor(_FLASH_T_GRID, device=generator.device, dtype=generator.dtype)
