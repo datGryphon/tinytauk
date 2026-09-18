@@ -19,7 +19,7 @@ if [[ ! -x "$PYTHON" ]]; then
 fi
 
 exec env \
-  PROFILE="${PROFILE:-profiles/sweep/cpu-q8-fp32.toml}" \
+  PROFILE="${PROFILE:-profiles/sweep/cpu-upstream-parity.toml}" \
   GEN_SECONDS="${GEN_SECONDS:-4.5}" \
   SEEDS="${SEEDS:-42,43}" \
   TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully and returned a clean health check.}" \

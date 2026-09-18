@@ -11,7 +11,7 @@ quantization = "none"
 [generator]
 backend = "pytorch"
 device = "cpu"
-dtype = "bf16"
+dtype = "fp32"
 quantization = "none"
 
 [vae]
@@ -19,7 +19,8 @@ backend = "pytorch"
 device = "cpu"
 dtype = "fp32"
 quantization = "none"
+compile = false
 
 [runtime]
 seed = 1234
-num_threads = 0
+num_threads = 4

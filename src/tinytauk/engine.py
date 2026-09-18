@@ -104,23 +104,21 @@ class TinyTAuK:
             "conditioner": {
                 "backend": "transformers",
                 "device": "cpu",
-                "dtype": "fp32",
-                "quantization": "int8-weight-only",
+                "dtype": "bf16",
+                "quantization": "none",
             },
             "generator": {
                 "backend": "pytorch",
                 "device": "cpu",
                 "dtype": "fp32",
-                "quantization": "int8",
+                "quantization": "none",
             },
             "vae": {
                 "backend": "pytorch",
                 "device": "cpu",
                 "dtype": "fp32",
                 "quantization": "none",
-                "compile": True,
-                "compile_mode": "default",
-                "compile_dynamic": True,
+                "compile": False,
             },
             "runtime": {"seed": 1234, "num_threads": 4},
         }

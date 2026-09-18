@@ -5,23 +5,21 @@ qwen_model_id = "Qwen/Qwen2.5-Omni-3B"
 [conditioner]
 backend = "transformers"
 device = "cpu"
-dtype = "fp32"
-quantization = "int8-weight-only"
+dtype = "bf16"
+quantization = "none"
 
 [generator]
 backend = "pytorch"
 device = "cpu"
 dtype = "fp32"
-quantization = "int8"
+quantization = "none"
 
 [vae]
 backend = "pytorch"
 device = "cpu"
 dtype = "fp32"
 quantization = "none"
-compile = true
-compile_mode = "default"
-compile_dynamic = true
+compile = false
 
 [runtime]
 seed = 1234

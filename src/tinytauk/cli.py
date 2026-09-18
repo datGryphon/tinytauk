@@ -28,8 +28,10 @@ def _doctor() -> int:
         "platform": platform.platform(),
         "machine": platform.machine(),
         "torch": torch.__version__,
+        "torchaudio": _optional_package_version("torchaudio"),
+        "transformers": _optional_package_version("transformers"),
+        "numpy": _optional_package_version("numpy"),
         "torch_threads": torch.get_num_threads(),
-        "torchao": _optional_package_version("torchao"),
         "qwen_omni_utils": _optional_package_version("qwen-omni-utils"),
         "cuda_available": torch.cuda.is_available(),
     }

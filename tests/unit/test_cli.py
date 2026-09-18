@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import wave
 from pathlib import Path
 
 import torch
 
-from tinytauk.cli import _write_pcm16, build_parser
+from tinytauk.cli import _doctor, _write_pcm16, build_parser
 
 
 def test_generate_parser_uses_built_in_cpu_defaults() -> None:
@@ -28,3 +29,11 @@ def test_write_pcm16(tmp_path: Path) -> None:
         assert handle.getsampwidth() == 2
         assert handle.getframerate() == 24_000
         assert handle.getnframes() == 3
+
+
+def test_doctor_reports_shared_runtime_versions(capsys) -> None:
+    assert _doctor() == 0
+    report = json.loads(capsys.readouterr().out)
+
+    assert {"python", "torch", "torchaudio", "transformers", "numpy"} <= report.keys()
+    assert "torchao" not in report

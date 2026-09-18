@@ -15,7 +15,6 @@ from tinytauk.quant.dynamic import (
     configure_x86_quantized_engine,
     select_dynamic_int8_linears,
 )
-from tinytauk.quant.torchao import apply_cpu_weight_only_linears
 from tinytauk.types import Conditioning, GenerationRequest
 
 from .flux2 import Flux2Edit
@@ -26,11 +25,6 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
     "bf16": torch.bfloat16,
     "fp32": torch.float32,
 }
-_WEIGHT_ONLY_BITS = {
-    "int8-weight-only": 8,
-    "int4-weight-only": 4,
-}
-
 
 def _resolved_arch(raw: Any) -> dict[str, Any]:
     resolved = OmegaConf.to_container(raw, resolve=True)
@@ -55,11 +49,8 @@ class PyTorchAuKGenerator:
         *,
         model_snapshot: str | Path | None = None,
     ) -> None:
-        if config.quantization not in {"none", "int8", "int8-weight-only", "int4-weight-only"}:
-            raise ValueError(
-                "PyTorch AuK generator supports only none, int8, int8-weight-only, "
-                "or int4-weight-only quantization"
-            )
+        if config.quantization not in {"none", "int8"}:
+            raise ValueError("PyTorch AuK generator supports only none or dynamic int8 quantization")
         if config.compile:
             raise ValueError("PyTorch AuK generator compilation is not supported")
 
@@ -111,21 +102,6 @@ class PyTorchAuKGenerator:
             )
             self.quantized_engine = configure_x86_quantized_engine()
             apply_dynamic_int8_linears(self.transformer, self.quantized_linear_names)
-        elif config.quantization in _WEIGHT_ONLY_BITS:
-            if self.device.type != "cpu" or self.dtype != torch.bfloat16:
-                raise ValueError("TorchAO weight-only generator quantization requires CPU BF16")
-            bits = _WEIGHT_ONLY_BITS[config.quantization]
-            self.quantized_linear_names = select_dynamic_int8_linears(
-                self.transformer,
-                min_weight_elements=1_000_000,
-                include_sensitive=False,
-            )
-            apply_cpu_weight_only_linears(
-                self.transformer,
-                self.quantized_linear_names,
-                bits=bits,
-            )
-            self.quantized_engine = f"torchao-cpu-w{bits}a16"
 
     def _load_transformer_weights(self, checkpoint_path: Path) -> None:
         checkpoint = load_file(str(checkpoint_path), device="cpu")
