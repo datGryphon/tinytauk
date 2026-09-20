@@ -30,7 +30,9 @@ Default policies are `fp32`, `int8-attn`, `int8-core`, and `int8-all`. Set
 
 The renderer writes WAVs plus timing/RMS metadata under
 `benchmarks/results/quality-corpus/`. Conditioning fixtures are keyed to the
-full case definition and rebuilt when a case changes.
+full case definition and conditioner runtime versions; they are rebuilt when
+either changes. If upstream model weights change at the same repository ID,
+set `REBUILD_CONDITIONING=1` to discard fixtures from the old snapshot.
 
 ## Score
 

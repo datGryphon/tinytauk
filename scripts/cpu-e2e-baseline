@@ -30,7 +30,7 @@ output_json = output_dir / "baseline.json"
 
 before = memory_sample()
 load_started = time.perf_counter()
-engine = TinyTAuK.from_config("profiles/cpu-baseline.toml")
+engine = TinyTAuK.from_config("profiles/cpu.toml")
 load_seconds = time.perf_counter() - load_started
 after_load = memory_sample()
 

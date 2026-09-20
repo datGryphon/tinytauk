@@ -26,6 +26,7 @@ import gc
 import hashlib
 import json
 import os
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,15 @@ fixture_dir = Path(os.environ["FIXTURE_DIR"])
 rebuild = os.environ["REBUILD_CONDITIONING"] == "1"
 payload: dict[str, Any] = json.loads(cases_path.read_text())
 cases: list[dict[str, Any]] = payload["cases"]
+model_config = ModelConfig()
+conditioning_runtime = {
+    "model_id": model_config.model_id,
+    "qwen_model_id": model_config.qwen_model_id,
+    "conditioner_dtype": "fp32",
+    "torch": torch.__version__,
+    "transformers": version("transformers"),
+    "qwen_omni_utils": version("qwen-omni-utils"),
+}
 
 
 def fingerprint(case: dict[str, Any]) -> str:
@@ -49,6 +59,7 @@ def fingerprint(case: dict[str, Any]) -> str:
         "spoken_text": str(case["spoken_text"]),
         "gen_seconds": float(case["gen_seconds"]),
         "seed": int(case["seed"]),
+        "conditioning_runtime": conditioning_runtime,
     }
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()

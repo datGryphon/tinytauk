@@ -113,7 +113,9 @@ def _component(
 class RuntimeConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     conditioner: ComponentConfig = field(default_factory=lambda: ComponentConfig(backend="transformers"))
-    generator: ComponentConfig = field(default_factory=lambda: ComponentConfig(backend="pytorch"))
+    generator: ComponentConfig = field(
+        default_factory=lambda: ComponentConfig(backend="pytorch", dtype="fp32")
+    )
     vae: ComponentConfig = field(default_factory=lambda: ComponentConfig(backend="pytorch", dtype="fp32"))
     runtime: ExecutionConfig = field(default_factory=ExecutionConfig)
 
@@ -148,6 +150,7 @@ class RuntimeConfig:
                 _table(raw, "generator"),
                 name="generator",
                 default_backend="pytorch",
+                default_dtype="fp32",
             ),
             vae=_component(
                 _table(raw, "vae"),

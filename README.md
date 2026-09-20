@@ -96,7 +96,8 @@ reference latents. It does not rerun Qwen or the reference VAE.
 
 Use `TinyTAuK.from_config(...)` for explicit component/runtime configuration.
 `profiles/cpu.toml` contains the same qualified CPU configuration used by
-`from_pretrained()`.
+`from_pretrained()`. The default `RuntimeConfig()` uses the same component dtypes;
+`from_pretrained()` additionally sets four CPU threads.
 
 ## Runtime compatibility
 

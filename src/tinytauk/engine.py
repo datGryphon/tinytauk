@@ -9,7 +9,7 @@ import torch
 from huggingface_hub import snapshot_download
 
 from .conditioning.transformers import TransformersConditioner
-from .config import RuntimeConfig
+from .config import ExecutionConfig, ModelConfig, RuntimeConfig
 from .generator.pytorch import PyTorchAuKGenerator
 from .types import AudioInput, Conditioning, GenerationRequest, GenerationResult
 from .vae.pytorch import PyTorchVAE
@@ -99,30 +99,12 @@ class TinyTAuK:
             raise ValueError(
                 "from_pretrained currently supports only CPU; use from_config for custom runtimes"
             )
-        raw = {
-            "model": {"model_id": model_id, "qwen_model_id": qwen_model_id},
-            "conditioner": {
-                "backend": "transformers",
-                "device": "cpu",
-                "dtype": "bf16",
-                "quantization": "none",
-            },
-            "generator": {
-                "backend": "pytorch",
-                "device": "cpu",
-                "dtype": "fp32",
-                "quantization": "none",
-            },
-            "vae": {
-                "backend": "pytorch",
-                "device": "cpu",
-                "dtype": "fp32",
-                "quantization": "none",
-                "compile": False,
-            },
-            "runtime": {"seed": 1234, "num_threads": 4},
-        }
-        return cls(RuntimeConfig.from_dict(raw))
+        return cls(
+            RuntimeConfig(
+                model=ModelConfig(model_id=model_id, qwen_model_id=qwen_model_id),
+                runtime=ExecutionConfig(num_threads=4),
+            )
+        )
 
     @staticmethod
     def _validate_instruction(instruction: str) -> None:

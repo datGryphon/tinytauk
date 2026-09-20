@@ -3,8 +3,9 @@ from pathlib import Path
 from tinytauk.config import RuntimeConfig
 
 
-def test_cpu_baseline_profile_loads() -> None:
-    config = RuntimeConfig.from_toml(Path("profiles/cpu-baseline.toml"))
+def test_default_configuration_uses_qualified_release_dtypes() -> None:
+    config = RuntimeConfig()
+    assert config == RuntimeConfig.from_dict({})
     assert config.model.model_id == "tencent/AuK-Flash"
     assert config.conditioner.device == "cpu"
     assert config.conditioner.dtype == "bf16"
@@ -16,7 +17,7 @@ def test_cpu_baseline_profile_loads() -> None:
     assert config.vae.dtype == "fp32"
     assert config.vae.quantization == "none"
     assert config.vae.compile is False
-    assert config.runtime.num_threads == 4
+    assert config.runtime.num_threads == 0
 
 
 def test_component_compile_settings_load() -> None:
@@ -71,19 +72,11 @@ def test_cpu_profile_uses_qualified_release_path() -> None:
     assert config.runtime.num_threads == 4
 
 
-def test_dynamic_flux_profiles_load() -> None:
-    for filename in ("cpu-q16.toml", "cpu-q16-fp32.toml", "cpu-opt-flux-int8.toml"):
-        config = RuntimeConfig.from_toml(Path("profiles/sweep") / filename)
-        assert config.conditioner.quantization == "none"
-        assert config.generator.quantization == "int8"
-        assert config.vae.quantization == "none"
-
-
-def test_non_torchao_experiment_profiles_load() -> None:
-    for filename in ("cpu-final-flux-bf16.toml", "cpu-opt-vae-bf16.toml"):
-        config = RuntimeConfig.from_toml(Path("profiles/sweep") / filename)
-        assert config.conditioner.quantization == "none"
-        assert config.generator.quantization == "none"
+def test_dynamic_flux_profile_loads() -> None:
+    config = RuntimeConfig.from_toml(Path("profiles/sweep/cpu-q16.toml"))
+    assert config.conditioner.quantization == "none"
+    assert config.generator.quantization == "int8"
+    assert config.vae.quantization == "none"
 
 
 def test_removed_torchao_quantization_is_rejected() -> None:

@@ -63,7 +63,9 @@ VAE                 FP32, eager
 PyTorch threads     4
 ```
 
-The release package does not depend on TorchAO or Torchtune.
+The release package does not depend on TorchAO or Torchtune. Completed
+ablation/sweep runners were removed from the release tree; their history is
+retained in Git. The release smoke and upstream parity tools remain available.
 
 ## Shared runtime target
 
