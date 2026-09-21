@@ -16,12 +16,11 @@ Version `0.2.0` supports:
 - file-path and in-memory tensor reference audio;
 - Qwen2.5-Omni conditioning and AuK hidden-state fusion;
 - AuK-Flash four-step Flux2 generation;
-- BigVGAN reference encode and waveform decode;
-- optional dynamic INT8 Flux experiments through PyTorch's CPU quantization path.
+- BigVGAN reference encode and waveform decode.
 
 The v0.2 release CPU profile is intentionally conservative: Qwen runs BF16,
-while Flux and the VAE run FP32 without quantization or compilation. The
-reference-audio encoder is loaded lazily on the first request that needs it.
+while Flux and the VAE run FP32. The reference-audio encoder is loaded lazily
+on the first request that needs it.
 
 TinyTAuK 0.2 targets the same core runtime now qualified by TinyTalk's other
 backends: Python 3.13, PyTorch/Torchaudio 2.11, and Transformers 5.17. TinyTAuK
@@ -93,7 +92,7 @@ retry = engine.generate_conditioned(conditioning, gen_seconds=6, seed=43)
 `generate_conditioned()` reuses both the Qwen conditioning and any encoded
 reference latents. It does not rerun Qwen or the reference VAE.
 
-Use `TinyTAuK.from_config(...)` for explicit component/runtime configuration.
+Use `TinyTAuK.from_config(...)` for explicit component device/dtype and runtime configuration.
 `profiles/cpu.toml` contains the same qualified CPU configuration used by
 `from_pretrained()`. The default `RuntimeConfig()` uses the same component dtypes;
 `from_pretrained()` additionally sets four CPU threads.
@@ -116,18 +115,12 @@ numpy         2.5.3 compatibility point; no exact project pin
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
 
-See `docs/CPU_BASELINE.md` for the measurements behind the CPU profile and
-`docs/QUALITY_BENCHMARK.md` for the speech-quality gate.
+See `docs/CPU_BASELINE.md` for the measurements behind the CPU profile.
 
-## Reference oracle
+## Reference parity
 
-```bash
-bash scripts/setup-reference
-bash scripts/reference-oracle
-```
-
-The reference checkout and generated artifacts are ignored by Git. See
-`docs/REFERENCE_ORACLE.md`.
+The staged upstream/local parity comparison is documented in
+`docs/REFERENCE_ORACLE.md`. Generated traces are ignored by Git.
 
 ## License
 

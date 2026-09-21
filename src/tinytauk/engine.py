@@ -20,7 +20,6 @@ class TinyTAuK:
 
     def __init__(self, config: RuntimeConfig) -> None:
         self.config = config
-        self._validate_backends()
         self._generate_lock = Lock()
 
         if config.runtime.num_threads > 0:
@@ -39,7 +38,6 @@ class TinyTAuK:
             config.model,
             config.conditioner,
             auk_checkpoint=checkpoint_path,
-            upstream_parity=config.conditioner.upstream_parity,
         )
         self.load_stage_seconds["conditioner"] = time.perf_counter() - component_started
 
@@ -59,16 +57,6 @@ class TinyTAuK:
         )
         self.load_stage_seconds["vae"] = time.perf_counter() - component_started
         self.load_seconds = time.perf_counter() - started
-
-    def _validate_backends(self) -> None:
-        supported = {
-            "conditioner": (self.config.conditioner.backend, "transformers"),
-            "generator": (self.config.generator.backend, "pytorch"),
-            "vae": (self.config.vae.backend, "pytorch"),
-        }
-        for name, (actual, expected) in supported.items():
-            if actual != expected:
-                raise ValueError(f"unsupported {name} backend {actual!r}; expected {expected!r}")
 
     @staticmethod
     def _find_transformer_checkpoint(snapshot: Path) -> Path:
@@ -93,12 +81,7 @@ class TinyTAuK:
         model_id: str = "tencent/AuK-Flash",
         *,
         qwen_model_id: str = "Qwen/Qwen2.5-Omni-3B",
-        device: str = "cpu",
     ) -> TinyTAuK:
-        if device != "cpu":
-            raise ValueError(
-                "from_pretrained currently supports only CPU; use from_config for custom runtimes"
-            )
         return cls(
             RuntimeConfig(
                 model=ModelConfig(model_id=model_id, qwen_model_id=qwen_model_id),

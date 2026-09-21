@@ -1,25 +1,17 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 Device = str
 DType = Literal["fp32", "bf16", "fp16"]
-Quantization = Literal["none", "int8"]
 
 _VALID_DTYPES = {"fp32", "bf16", "fp16"}
-_VALID_QUANTIZATION = {"none", "int8"}
 _COMPONENT_KEYS = {
-    "backend",
     "device",
     "dtype",
-    "quantization",
-    "compile",
-    "compile_mode",
-    "compile_dynamic",
-    "upstream_parity",
 }
 
 
@@ -31,14 +23,8 @@ class ModelConfig:
 
 @dataclass(frozen=True, slots=True)
 class ComponentConfig:
-    backend: str
     device: Device = "cpu"
     dtype: DType = "bf16"
-    quantization: Quantization = "none"
-    compile: bool = False
-    compile_mode: str = "default"
-    compile_dynamic: bool = True
-    upstream_parity: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,18 +60,10 @@ def _integer(table: dict[str, Any], key: str, default: int) -> int:
     return value
 
 
-def _boolean(table: dict[str, Any], key: str, default: bool) -> bool:
-    value = table.get(key, default)
-    if not isinstance(value, bool):
-        raise TypeError(f"{key} must be a boolean")
-    return value
-
-
 def _component(
     table: dict[str, Any],
     *,
     name: str,
-    default_backend: str,
     default_dtype: DType = "bf16",
 ) -> ComponentConfig:
     _reject_unknown(table, _COMPONENT_KEYS, f"[{name}]")
@@ -93,30 +71,18 @@ def _component(
     if dtype not in _VALID_DTYPES:
         raise ValueError(f"unsupported dtype: {dtype}")
 
-    quantization = _string(table, "quantization", "none")
-    if quantization not in _VALID_QUANTIZATION:
-        raise ValueError(f"unsupported quantization: {quantization}")
-
     return ComponentConfig(
-        backend=_string(table, "backend", default_backend),
         device=_string(table, "device", "cpu"),
         dtype=cast(DType, dtype),
-        quantization=cast(Quantization, quantization),
-        compile=_boolean(table, "compile", False),
-        compile_mode=_string(table, "compile_mode", "default"),
-        compile_dynamic=_boolean(table, "compile_dynamic", True),
-        upstream_parity=_boolean(table, "upstream_parity", False),
     )
 
 
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
-    conditioner: ComponentConfig = field(default_factory=lambda: ComponentConfig(backend="transformers"))
-    generator: ComponentConfig = field(
-        default_factory=lambda: ComponentConfig(backend="pytorch", dtype="fp32")
-    )
-    vae: ComponentConfig = field(default_factory=lambda: ComponentConfig(backend="pytorch", dtype="fp32"))
+    conditioner: ComponentConfig = field(default_factory=ComponentConfig)
+    generator: ComponentConfig = field(default_factory=lambda: ComponentConfig(dtype="fp32"))
+    vae: ComponentConfig = field(default_factory=lambda: ComponentConfig(dtype="fp32"))
     runtime: ExecutionConfig = field(default_factory=ExecutionConfig)
 
     @classmethod
@@ -144,18 +110,15 @@ class RuntimeConfig:
             conditioner=_component(
                 _table(raw, "conditioner"),
                 name="conditioner",
-                default_backend="transformers",
             ),
             generator=_component(
                 _table(raw, "generator"),
                 name="generator",
-                default_backend="pytorch",
                 default_dtype="fp32",
             ),
             vae=_component(
                 _table(raw, "vae"),
                 name="vae",
-                default_backend="pytorch",
                 default_dtype="fp32",
             ),
             runtime=ExecutionConfig(
@@ -163,6 +126,3 @@ class RuntimeConfig:
                 num_threads=num_threads,
             ),
         )
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)

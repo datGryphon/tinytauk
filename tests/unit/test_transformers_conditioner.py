@@ -3,12 +3,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from tinytauk.conditioning.transformers import (
-    TransformersConditioner,
-    _conditioner_load_dtype,
-    _find_tensor_key,
-)
-from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.conditioning.transformers import TransformersConditioner, _find_tensor_key
 from tinytauk.types import GenerationRequest
 
 
@@ -48,18 +43,3 @@ def test_messages_accepts_reference_audio_tensor() -> None:
 
     assert isinstance(audio, np.ndarray)
     assert audio.shape == (16_000,)
-
-
-def test_dtype_map_keeps_expected_torch_types() -> None:
-    config = ComponentConfig(backend="transformers", dtype="bf16")
-    model = ModelConfig()
-    assert config.dtype == "bf16"
-    assert model.qwen_model_id == "Qwen/Qwen2.5-Omni-3B"
-    assert torch.bfloat16.is_floating_point
-
-
-def test_upstream_parity_keeps_qwen_bf16_even_with_fp32_profile() -> None:
-    config = ComponentConfig(backend="transformers", dtype="fp32", quantization="none")
-
-    assert _conditioner_load_dtype(config, upstream_parity=True) is torch.bfloat16
-    assert _conditioner_load_dtype(config, upstream_parity=False) is torch.float32

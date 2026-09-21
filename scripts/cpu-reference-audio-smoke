@@ -33,7 +33,7 @@ import torch
 import torchaudio
 
 from tinytauk import TinyTAuK
-from tinytauk.reference import memory_sample
+from scripts._memory import memory_sample
 
 reference = Path(sys.argv[1])
 output_dir = Path(sys.argv[2])
@@ -116,10 +116,6 @@ payload = {
     "gen_seconds_override": gen_seconds_override,
     "chars_per_second": chars_per_second,
     "duration_headroom": duration_headroom,
-    "conditioner_quantization": engine.config.conditioner.quantization,
-    "generator_quantization": engine.config.generator.quantization,
-    "generator_quantized_linear_count": len(engine.generator.quantized_linear_names),
-    "generator_quantized_engine": engine.generator.quantized_engine,
     "reference": str(reference),
     "condition_seconds": condition_seconds,
     "conditioning_stage_seconds": conditioning.stage_seconds,

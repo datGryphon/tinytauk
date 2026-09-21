@@ -28,29 +28,17 @@ qualification:
 | Flux generator | ~83.2 s |
 | VAE decode | ~9.6 s |
 | End-to-end request | ~210.6 s |
-| Peak RSS | ~14.9 GiB |
+| Peak RSS | ~14.5 GiB (~14,900 MiB) |
 
 These values are a qualification reference, not a hardware-independent
 performance promise.
 
-## Optimization findings
+## Deferred optimization
 
-The branch also tested several lower-precision paths before the v0.2 release
-profile was frozen.
-
-Qwen W8A16 produced the useful result: about 1.40x end-to-end speedup in the
-final ladder with quality close to the repaired baseline, but on-the-fly
-conversion caused a ~26 GiB transient peak. That experiment depended on
-TorchAO, which is intentionally not a v0.2 dependency. The result is retained
-as motivation for the v0.3 prepared-quantized-model work.
-
-Flux dynamic INT8 improved generator throughput in isolation but caused a large
-speech-quality regression, so it remains an explicit experiment rather than a
-release default.
-
-BF16 Flux was both slow and acoustically incorrect on the tested CPU path.
-A BF16 VAE preserved waveform quality but made decode dramatically slower and
-provided little memory benefit.
+A Qwen W8A16 experiment improved end-to-end throughput, but its on-the-fly
+conversion produced an unacceptable startup memory peak. Prepared, natively
+serialized lower-precision weights are a possible v0.3 direction; v0.2 does
+not implement quantization or compilation.
 
 ## v0.2 release profile
 
@@ -63,9 +51,8 @@ VAE                 FP32, eager
 PyTorch threads     4
 ```
 
-The release package does not depend on TorchAO or Torchtune. Completed
-ablation/sweep runners were removed from the release tree; their history is
-retained in Git. The release smoke and upstream parity tools remain available.
+The release package does not depend on TorchAO or Torchtune. The reference-audio
+smoke and staged upstream parity tools remain available.
 
 ## Shared runtime target
 

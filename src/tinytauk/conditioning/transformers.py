@@ -22,10 +22,6 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
-def _conditioner_load_dtype(config: ComponentConfig, *, upstream_parity: bool) -> torch.dtype:
-    return torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
-
-
 def _find_tensor_key(keys: Iterable[str], name: str) -> str:
     key_list = list(keys)
     if name in key_list:
@@ -45,11 +41,7 @@ def _load_fusion_parameters(checkpoint_path: str | Path) -> tuple[torch.Tensor, 
 
 
 class TransformersConditioner:
-    """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion.
-
-    ``upstream_parity`` reproduces AuK's unquantized BF16 Qwen load while the
-    Flux generator remains FP32. AuK does not promote the Qwen thinker to FP32.
-    """
+    """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion."""
 
     def __init__(
         self,
@@ -57,17 +49,13 @@ class TransformersConditioner:
         config: ComponentConfig,
         *,
         auk_checkpoint: str | Path,
-        upstream_parity: bool = False,
     ) -> None:
-        if config.quantization != "none":
-            raise ValueError("TransformersConditioner does not support quantized conditioning in v0.2")
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
-        load_dtype = _conditioner_load_dtype(config, upstream_parity=upstream_parity)
         thinker: Any = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
             model.qwen_model_id,
-            dtype=load_dtype,
+            dtype=_DTYPE_MAP[config.dtype],
         )
         if thinker.visual is not None:
             del thinker.visual

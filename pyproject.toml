@@ -29,16 +29,10 @@ dependencies = [
   "x-transformers>=1.31.14",
 ]
 
-[project.optional-dependencies]
-reference = [
-  "torchdiffeq",
-]
-
 [dependency-groups]
 dev = [
   "mypy>=1.17",
   "pytest>=8.4",
-  "pytest-cov>=6.2",
 ]
 
 [project.scripts]

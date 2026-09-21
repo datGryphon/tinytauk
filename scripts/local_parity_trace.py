@@ -60,7 +60,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Trace TinyTAuK against upstream AuK boundaries")
     parser.add_argument("reference")
     parser.add_argument("output_dir")
-    parser.add_argument("--profile", default="profiles/sweep/cpu-upstream-parity.toml")
+    parser.add_argument("--profile", default="profiles/cpu.toml")
     parser.add_argument("--seconds", type=float, default=4.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -75,12 +75,8 @@ def main() -> None:
     instruction = f'Say the following with the same voice: "{args.text}"'
 
     engine = TinyTAuK.from_config(args.profile)
-    if not engine.config.conditioner.upstream_parity:
-        raise RuntimeError("local parity trace requires conditioner.upstream_parity=true")
-    if engine.config.conditioner.quantization != "none":
-        raise RuntimeError("local parity trace requires unquantized conditioner")
-    if engine.config.generator.quantization != "none":
-        raise RuntimeError("local parity trace requires unquantized generator")
+    if engine.config.conditioner.dtype != "bf16" or engine.config.generator.dtype != "fp32":
+        raise RuntimeError("local parity trace requires BF16 Qwen and FP32 Flux")
 
     reference_audio = load_audio(reference, target_sample_rate=engine.vae.sample_rate)
     reference_audio = reference_audio.to(device=engine.vae.device, dtype=torch.float32).unsqueeze(0)
@@ -171,7 +167,6 @@ def main() -> None:
         "seconds": args.seconds,
         "seed": args.seed,
         "torch_version": torch.__version__,
-        "conditioner_upstream_parity": engine.config.conditioner.upstream_parity,
         "tensors": {name: tensor_stats(value) for name, value in tensors.items()},
     }
     (output_dir / "trace.json").write_text(

@@ -19,7 +19,7 @@ Reference audio accepts a path or an in-memory `(waveform, sample_rate)` tuple.
 Zero-shot TTS is the first qualified use of the audio-conditioned path.
 
 The v0.2 release CPU profile favors the repaired upstream-quality path over
-aggressive quantization: Qwen BF16, Flux FP32, and VAE FP32. It is aligned with
+experimental optimization: Qwen BF16, Flux FP32, and VAE FP32. It is aligned with
 the shared TinyTalk Python 3.13 / Torch 2.11 / Transformers 5.17 stack and has
 no TorchAO or Torchtune dependency.
 

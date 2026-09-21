@@ -8,13 +8,7 @@ from pathlib import Path
 import torch
 
 from . import __version__
-from .config import RuntimeConfig
 from .engine import TinyTAuK
-
-
-def _show_config(path: Path) -> int:
-    print(json.dumps(RuntimeConfig.from_toml(path).to_dict(), indent=2, sort_keys=True))
-    return 0
 
 
 def _write_pcm16(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
@@ -65,9 +59,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    config = sub.add_parser("config", help="Resolve and print a runtime profile")
-    config.add_argument("path", type=Path)
-
     generate = sub.add_parser("generate", help="Generate speech with AuK-Flash")
     generate.add_argument("instruction")
     generate.add_argument("--profile", type=Path)
@@ -82,8 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.command == "config":
-        return _show_config(args.path)
     if args.command == "generate":
         return _generate(
             args.profile,
