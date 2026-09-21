@@ -33,7 +33,6 @@ does not depend on TorchAO or Torchtune.
 nix develop
 rm -rf .venv
 uv sync
-uv run tinytauk doctor
 ./scripts/check
 ```
 
@@ -100,9 +99,6 @@ Use `TinyTAuK.from_config(...)` for explicit component/runtime configuration.
 `from_pretrained()` additionally sets four CPU threads.
 
 ## Runtime compatibility
-
-`tinytauk doctor` prints the actual Python, Torch, Torchaudio, Transformers,
-and NumPy versions in the active environment.
 
 The v0.2 compatibility target is:
 

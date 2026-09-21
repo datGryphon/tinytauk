@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
 import wave
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import torch
@@ -12,31 +10,6 @@ import torch
 from . import __version__
 from .config import RuntimeConfig
 from .engine import TinyTAuK
-
-
-def _optional_package_version(package: str) -> str | None:
-    try:
-        return version(package)
-    except PackageNotFoundError:
-        return None
-
-
-def _doctor() -> int:
-    report: dict[str, object] = {
-        "tinytauk": __version__,
-        "python": platform.python_version(),
-        "platform": platform.platform(),
-        "machine": platform.machine(),
-        "torch": torch.__version__,
-        "torchaudio": _optional_package_version("torchaudio"),
-        "transformers": _optional_package_version("transformers"),
-        "numpy": _optional_package_version("numpy"),
-        "torch_threads": torch.get_num_threads(),
-        "qwen_omni_utils": _optional_package_version("qwen-omni-utils"),
-        "cuda_available": torch.cuda.is_available(),
-    }
-    print(json.dumps(report, indent=2, sort_keys=True))
-    return 0
 
 
 def _show_config(path: Path) -> int:
@@ -92,8 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("doctor", help="Report runtime/platform capabilities")
-
     config = sub.add_parser("config", help="Resolve and print a runtime profile")
     config.add_argument("path", type=Path)
 
@@ -111,8 +82,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    if args.command == "doctor":
-        return _doctor()
     if args.command == "config":
         return _show_config(args.path)
     if args.command == "generate":

@@ -77,8 +77,6 @@ transformers  5.17.0
 numpy         2.5.3 compatibility point, not exactly pinned
 ```
 
-Run `uv run tinytauk doctor` to print the versions actually installed.
-
 ## v0.3 direction
 
 The next CPU optimization is to prepare a lower-precision Qwen model once using

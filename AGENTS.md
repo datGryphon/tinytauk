@@ -46,7 +46,6 @@ because Flux2 caches projections during its four sampling steps.
 ```bash
 rm -rf .venv
 uv sync
-uv run tinytauk doctor
 ./scripts/check
 OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 bash scripts/cpu-bench
 ```
