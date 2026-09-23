@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: $0 REFERENCE_WAV [OUTPUT_DIR]" >&2
+  exit 2
+fi
+
+REFERENCE_WAV="$1"
+OUTPUT_DIR="${2:-benchmarks/results/reference-audio-smoke}"
+
+exec env \
+  PROFILE="${PROFILE:-}" \
+  SEEDS="${SEEDS:-42,43}" \
+  GEN_SECONDS="${GEN_SECONDS:-}" \
+  CHARS_PER_SECOND="${CHARS_PER_SECOND:-14}" \
+  DURATION_HEADROOM="${DURATION_HEADROOM:-1.0}" \
+  TARGET_TEXT="${TARGET_TEXT:-The service restarted successfully and returned a clean health check.}" \
+  uv run python - "$REFERENCE_WAV" "$OUTPUT_DIR" <<'PY'
+from __future__ import annotations
+
+import json
+import math
+import os
+import sys
+import time
+from pathlib import Path
+
+import torch
+import torchaudio
+
+from tinytauk import TinyTAuK
+from scripts._memory import memory_sample
+
+reference = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+output_dir.mkdir(parents=True, exist_ok=True)
+profile = os.environ["PROFILE"].strip()
+seeds = tuple(int(value.strip()) for value in os.environ["SEEDS"].split(",") if value.strip())
+gen_seconds_raw = os.environ["GEN_SECONDS"].strip()
+gen_seconds_override = float(gen_seconds_raw) if gen_seconds_raw else None
+chars_per_second = float(os.environ["CHARS_PER_SECOND"])
+duration_headroom = float(os.environ["DURATION_HEADROOM"])
+target_text = os.environ["TARGET_TEXT"].strip()
+if not seeds:
+    raise SystemExit("SEEDS must contain at least one integer")
+if gen_seconds_override is not None and (
+    not math.isfinite(gen_seconds_override) or gen_seconds_override <= 0
+):
+    raise SystemExit("GEN_SECONDS must be a positive finite number when set")
+if not math.isfinite(chars_per_second) or chars_per_second <= 0:
+    raise SystemExit("CHARS_PER_SECOND must be a positive finite number")
+if not math.isfinite(duration_headroom) or duration_headroom <= 0:
+    raise SystemExit("DURATION_HEADROOM must be a positive finite number")
+if not target_text:
+    raise SystemExit("TARGET_TEXT must not be empty")
+
+# Upstream AuK zero-shot/reference TTS contract. Do not use the no-reference
+# Instruct-TTS description template here.
+instruction = f"Say the following with the same voice: {json.dumps(target_text, ensure_ascii=False)}"
+seconds = (
+    gen_seconds_override
+    if gen_seconds_override is not None
+    else max(1.0, len(target_text) / chars_per_second * duration_headroom)
+)
+
+before = memory_sample()
+engine = TinyTAuK.from_config(profile) if profile else TinyTAuK.from_pretrained()
+after_load = memory_sample()
+
+condition_started = time.perf_counter()
+conditioning = engine.condition(
+    instruction,
+    reference_audio=reference,
+    seed=seeds[0],
+)
+condition_seconds = time.perf_counter() - condition_started
+after_conditioning = memory_sample()
+
+runs = []
+for seed in seeds:
+    started = time.perf_counter()
+    result = engine.generate_conditioned(conditioning, gen_seconds=seconds, seed=seed)
+    wall = time.perf_counter() - started
+    memory = memory_sample()
+    if not torch.isfinite(result.audio).all():
+        raise RuntimeError(f"seed {seed} produced NaN/Inf audio")
+    path = output_dir / f"clone-seed-{seed}.wav"
+    torchaudio.save(str(path), result.audio, result.sample_rate)
+    runs.append(
+        {
+            "seed": seed,
+            "output": str(path),
+            "wall_seconds": wall,
+            "generated_seconds": result.generated_seconds,
+            "rtf": wall / result.generated_seconds,
+            "stage_seconds": result.stage_seconds,
+            "peak_amplitude": float(result.audio.abs().max()),
+            "rms": float(torch.sqrt(torch.mean(result.audio.square()))),
+            "current_rss_mb": memory.current_rss_mb,
+            "peak_rss_mb": memory.peak_rss_mb,
+        }
+    )
+
+payload = {
+    "profile": profile or "from_pretrained",
+    "instruction_shape": "upstream-zero-shot-tts",
+    "instruction": instruction,
+    "target_text": target_text,
+    "target_characters": len(target_text),
+    "duration_mode": "fixed" if gen_seconds_override is not None else "text-derived",
+    "gen_seconds_requested": seconds,
+    "gen_seconds_override": gen_seconds_override,
+    "chars_per_second": chars_per_second,
+    "duration_headroom": duration_headroom,
+    "reference": str(reference),
+    "condition_seconds": condition_seconds,
+    "conditioning_stage_seconds": conditioning.stage_seconds,
+    "reference_latent_frames": (
+        int(conditioning.reference_lengths[0])
+        if isinstance(conditioning.reference_lengths, torch.Tensor)
+        else None
+    ),
+    "rss_before_mb": before.current_rss_mb,
+    "rss_after_load_mb": after_load.current_rss_mb,
+    "peak_rss_after_load_mb": after_load.peak_rss_mb,
+    "rss_after_conditioning_mb": after_conditioning.current_rss_mb,
+    "peak_rss_after_conditioning_mb": after_conditioning.peak_rss_mb,
+    "runs": runs,
+    "peak_rss_mb": max(
+        after_load.peak_rss_mb,
+        after_conditioning.peak_rss_mb,
+        *(float(run["peak_rss_mb"]) for run in runs),
+    ),
+}
+text = json.dumps(payload, indent=2, sort_keys=True)
+print(text)
+(output_dir / "result.json").write_text(text + "\n", encoding="utf-8")
+PY

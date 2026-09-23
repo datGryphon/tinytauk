@@ -1,31 +1,48 @@
 # Roadmap
 
-## Current
+## Current — v0.2
 
-TinyTAuK supports AuK-Flash text/instruction TTS with the built-in CPU runtime.
-`profiles/cpu.toml` exposes the same configuration explicitly.
+TinyTAuK `0.2.0` adds reusable utterance conditioning and audio-conditioned
+AuK-Flash inference on top of the qualified CPU runtime.
 
 The public API is:
 
 ```python
 TinyTAuK.from_pretrained(...)
 TinyTAuK.from_config(...)
+TinyTAuK.condition(...)
+TinyTAuK.generate_conditioned(...)
 TinyTAuK.generate(...)
 ```
 
-## Next
+Reference audio accepts a path or an in-memory `(waveform, sample_rate)` tuple.
+Zero-shot TTS is the first qualified use of the audio-conditioned path.
 
-1. Add TinyTAuK as a TinyTalk backend.
-2. Add reference-audio generation. The Qwen audio tower is retained; the Flux2
-   reference path is not implemented yet.
-3. Keep the existing WER/CER corpus as the regression gate.
+The v0.2 release CPU profile favors the repaired upstream-quality path over
+experimental optimization: Qwen BF16, Flux FP32, and VAE FP32. It is aligned with
+the shared TinyTalk Python 3.13 / Torch 2.11 / Transformers 5.17 stack and has
+no TorchAO or Torchtune dependency.
 
-## Later, if needed
+## Next — v0.3
 
-- lower-memory Qwen hidden-state fusion;
-- audio-tower quantization after reference-audio quality can be measured;
-- alternate VAE runtimes;
-- Vulkan/ggml or GPU acceleration.
+1. Reuse natively serialized lower-precision model artifacts, starting from the
+   qualified Qwen W8A16 result, so optimized profiles do not materialize and
+   quantize the FP32 source model on every process start.
+2. Keep quantization backend choice platform-specific and configuration-driven.
+3. Add explicit prepare/prewarm tooling for deployment.
+4. Promote optimized platform profiles only after quality, steady-state memory,
+   startup peak, and end-to-end latency are measured.
+
+## Later
+
+1. Qualify a generic source-audio `edit(...)` API for content repair and speech
+   enhancement.
+2. Expand quality gates beyond WER/CER with speaker-similarity and edit
+   preservation metrics.
+3. Benchmark reference-latent caching and audio-conditioned retry strategies in
+   real callers.
+4. Explore paralinguistic editing, target-speaker extraction, alternate VAE
+   runtimes, and Vulkan/ggml or GPU acceleration as needed.
 
 TinyTAuK does not own HTTP serving, request queues, transcript retry policy,
-chunking, or audio stitching. Those stay in the caller.
+chunking, repair policy, or audio stitching. Those stay in the caller.

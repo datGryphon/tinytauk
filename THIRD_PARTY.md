@@ -11,6 +11,7 @@ Adapted from commit `d9f30ffe4231dbc90b48cc83a35d310fece0b060` in:
 - `src/tinytauk/generator/modules.py`
 - `src/tinytauk/generator/flux2.py`
 - `src/tinytauk/vae/bigvgan.py`
+- `src/tinytauk/vae/encoder.py`
 
 Copyright (C) 2026 Tencent. All rights reserved.
 
@@ -34,8 +35,9 @@ SOFTWARE.
 
 ## BigVGAN / HiFi-GAN — MIT
 
-AuK's decoder is derived from BigVGAN and HiFi-GAN. TinyTAuK retains the
-corresponding decoder lineage in `src/tinytauk/vae/bigvgan.py`.
+AuK's VAE is derived from BigVGAN and HiFi-GAN. TinyTAuK retains the
+corresponding encoder/decoder lineage in `src/tinytauk/vae/encoder.py` and
+`src/tinytauk/vae/bigvgan.py`.
 
 Copyright (c) 2022 NVIDIA CORPORATION.
 Copyright (c) 2020 Jungil Kong

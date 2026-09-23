@@ -19,7 +19,7 @@
               python313
               uv
               ruff
-              ffmpeg
+              ffmpeg_8
               libsndfile
               zlib
               pkg-config
@@ -28,6 +28,7 @@
             ];
 
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [
+              pkgs.ffmpeg_8.lib
               pkgs.libsndfile
               pkgs.stdenv.cc.cc.lib
               pkgs.zlib

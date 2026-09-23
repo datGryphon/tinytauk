@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import torch
 from huggingface_hub import snapshot_download
@@ -10,11 +10,6 @@ from omegaconf import OmegaConf
 from safetensors.torch import load_file
 
 from tinytauk.config import ComponentConfig, ModelConfig
-from tinytauk.quant.dynamic import (
-    apply_dynamic_int8_linears,
-    configure_x86_quantized_engine,
-    select_dynamic_int8_linears,
-)
 from tinytauk.types import Conditioning, GenerationRequest
 
 from .flux2 import Flux2Edit
@@ -27,12 +22,21 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
-class PyTorchAuKGenerator:
-    """AuK-Flash Flux2Edit transformer and four-step sampler.
+def _resolved_arch(raw: Any) -> dict[str, Any]:
+    resolved = OmegaConf.to_container(raw, resolve=True)
+    if not isinstance(resolved, dict):
+        raise TypeError("AuK model.arch must resolve to a mapping")
 
-    Text/instruction generation is supported for batch size one. Reference-audio
-    generation is reserved by the public request type but is not implemented here.
-    """
+    arch: dict[str, Any] = {}
+    for key, value in resolved.items():
+        if not isinstance(key, str):
+            raise TypeError("AuK model.arch keys must be strings")
+        arch[key] = value
+    return arch
+
+
+class PyTorchAuKGenerator:
+    """AuK-Flash Flux2Edit transformer and four-step sampler."""
 
     def __init__(
         self,
@@ -41,18 +45,11 @@ class PyTorchAuKGenerator:
         *,
         model_snapshot: str | Path | None = None,
     ) -> None:
-        if config.quantization not in {"none", "int8"}:
-            raise ValueError("PyTorch AuK generator supports only none or int8 quantization")
-        if config.compile:
-            raise ValueError("PyTorch AuK generator compilation is not supported")
-
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
         self.dtype = _DTYPE_MAP[config.dtype]
         self.snapshot = Path(model_snapshot or snapshot_download(repo_id=model.model_id))
-        self.quantized_linear_names: tuple[str, ...] = ()
-        self.quantized_engine: str | None = None
 
         config_path = self.snapshot / "config.yaml"
         checkpoint_path = self.snapshot / "auk_flash.safetensors"
@@ -76,24 +73,13 @@ class PyTorchAuKGenerator:
         self.downsample_rate = int(vae_config.downsample_rate)
         self.latent_dim = int(vae_config.latent_dim)
 
-        arch = cast(dict[str, Any], OmegaConf.to_container(model_config.arch, resolve=True))
+        arch = _resolved_arch(model_config.arch)
         arch["attn_backend"] = "torch"
         arch["checkpoint_activations"] = False
         self.transformer = Flux2Edit(**arch, latent_dim=self.latent_dim)
         self._load_transformer_weights(checkpoint_path)
         self.transformer = self.transformer.to(device=self.device, dtype=self.dtype).eval()
         self.transformer.requires_grad_(False)
-
-        if config.quantization == "int8":
-            if self.device.type != "cpu" or self.dtype != torch.float32:
-                raise ValueError("dynamic INT8 generator requires CPU FP32 input weights")
-            self.quantized_linear_names = select_dynamic_int8_linears(
-                self.transformer,
-                min_weight_elements=1_000_000,
-                include_sensitive=False,
-            )
-            self.quantized_engine = configure_x86_quantized_engine()
-            apply_dynamic_int8_linears(self.transformer, self.quantized_linear_names)
 
     def _load_transformer_weights(self, checkpoint_path: Path) -> None:
         checkpoint = load_file(str(checkpoint_path), device="cpu")
@@ -109,21 +95,37 @@ class PyTorchAuKGenerator:
                 f"Flux2Edit checkpoint mismatch: missing={missing[:10]} unexpected={unexpected[:10]}"
             )
 
+    def _reference_inputs(self, conditioning: Conditioning) -> tuple[torch.Tensor, torch.Tensor]:
+        reference_latents = conditioning.reference_latents
+        if reference_latents is None:
+            return (
+                torch.zeros((1, 0, self.latent_dim), device=self.device, dtype=self.dtype),
+                torch.zeros((1, 0), device=self.device, dtype=torch.bool),
+            )
+
+        reference_lengths = conditioning.reference_lengths
+        if reference_lengths is None:
+            raise ValueError("reference conditioning is missing reference_lengths")
+
+        reference = reference_latents.to(device=self.device, dtype=self.dtype)
+        if reference.ndim != 3 or reference.shape[0] != 1 or reference.shape[-1] != self.latent_dim:
+            raise ValueError(
+                f"reference_latents must have shape [1, T, {self.latent_dim}], got {tuple(reference.shape)}"
+            )
+        lengths = reference_lengths.to(device=self.device, dtype=torch.long)
+        if lengths.shape != (1,):
+            raise ValueError(f"reference_lengths must have shape [1], got {tuple(lengths.shape)}")
+        if int(lengths[0]) < 0 or int(lengths[0]) > reference.shape[1]:
+            raise ValueError("reference_lengths is outside the reference latent sequence")
+        positions = torch.arange(reference.shape[1], device=self.device).unsqueeze(0)
+        return reference, positions < lengths.unsqueeze(1)
+
     @torch.inference_mode()
     def generate_latents(
         self,
         request: GenerationRequest,
         conditioning: Conditioning,
     ) -> torch.Tensor:
-        if request.reference_audio is not None:
-            raise NotImplementedError("reference-audio generation is not implemented")
-        if not isinstance(conditioning.values, torch.Tensor):
-            raise TypeError("conditioning.values must be a torch.Tensor")
-        if conditioning.attention_mask is not None and not isinstance(
-            conditioning.attention_mask, torch.Tensor
-        ):
-            raise TypeError("conditioning.attention_mask must be a torch.Tensor")
-
         target_len = max(
             1,
             int(math.ceil(request.gen_seconds * self.target_sample_rate / self.downsample_rate)),
@@ -141,12 +143,7 @@ class PyTorchAuKGenerator:
         context_mask = (
             conditioning.attention_mask.to(self.device) if conditioning.attention_mask is not None else None
         )
-        empty_ref = torch.zeros(
-            (1, 0, self.latent_dim),
-            device=self.device,
-            dtype=self.dtype,
-        )
-        empty_ref_mask = torch.zeros((1, 0), device=self.device, dtype=torch.bool)
+        reference, reference_mask = self._reference_inputs(conditioning)
 
         times = torch.tensor(_FLASH_T_GRID, device=self.device, dtype=self.dtype)
         try:
@@ -157,8 +154,8 @@ class PyTorchAuKGenerator:
                     time=times[index],
                     mask=None,
                     c_mask=context_mask,
-                    ref=empty_ref,
-                    ref_mask=empty_ref_mask,
+                    ref=reference,
+                    ref_mask=reference_mask,
                     drop_audio_cond=False,
                     drop_text=False,
                     cfg_infer=False,

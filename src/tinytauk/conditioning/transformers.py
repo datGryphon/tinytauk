@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from safetensors import safe_open
 from transformers import Qwen2_5OmniProcessor, Qwen2_5OmniThinkerForConditionalGeneration
 
+from tinytauk.audio import qwen_audio_value
 from tinytauk.config import ComponentConfig, ModelConfig
 from tinytauk.types import Conditioning, GenerationRequest
 
@@ -39,26 +40,8 @@ def _load_fusion_parameters(checkpoint_path: str | Path) -> tuple[torch.Tensor, 
     return weights, scale
 
 
-def _torchao_int8_weight_only_config() -> Any:
-    try:
-        torchao_quantization: Any = import_module("torchao.quantization")
-        from transformers import TorchAoConfig
-    except ImportError as exc:
-        raise RuntimeError("INT8 weight-only conditioning requires torchao; run `uv sync`") from exc
-
-    # Reference-audio conditioning depends on the audio tower, so it remains FP32.
-    return TorchAoConfig(
-        quant_type=torchao_quantization.Int8WeightOnlyConfig(),
-        modules_to_not_convert=["audio_tower", "lm_head"],
-    )
-
-
 class TransformersConditioner:
-    """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion.
-
-    ``upstream_parity`` reproduces AuK's BF16-load-then-FP32-promotion behavior
-    for exact reference comparisons.
-    """
+    """Qwen2.5-Omni conditioner with AuK learned hidden-state fusion."""
 
     def __init__(
         self,
@@ -66,36 +49,19 @@ class TransformersConditioner:
         config: ComponentConfig,
         *,
         auk_checkpoint: str | Path,
-        upstream_parity: bool = False,
     ) -> None:
-        if config.quantization not in {"none", "int8-weight-only"}:
-            raise ValueError("TransformersConditioner supports only none or int8-weight-only quantization")
-        if upstream_parity and config.quantization != "none":
-            raise ValueError("upstream parity requires an unquantized conditioner")
-
         self.model_config = model
         self.config = config
         self.device = torch.device(config.device)
-        if config.quantization == "int8-weight-only" and self.device.type != "cpu":
-            raise ValueError("INT8 weight-only conditioning requires CPU")
-
-        load_dtype = torch.bfloat16 if upstream_parity else _DTYPE_MAP[config.dtype]
-        quantization_config = (
-            _torchao_int8_weight_only_config() if config.quantization == "int8-weight-only" else None
-        )
         thinker: Any = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
             model.qwen_model_id,
-            dtype=load_dtype,
-            quantization_config=quantization_config,
+            dtype=_DTYPE_MAP[config.dtype],
         )
         if thinker.visual is not None:
             del thinker.visual
             thinker.visual = None
 
-        if upstream_parity:
-            thinker = thinker.to(torch.float32)
-        if config.quantization == "none":
-            thinker = thinker.to(self.device)
+        thinker = thinker.to(self.device)
         self.thinker: Any = thinker.eval()
         self.thinker.requires_grad_(False)
 
@@ -118,7 +84,7 @@ class TransformersConditioner:
         if request.reference_audio is None:
             content[0]["text"] = f"{text}{_NO_PROMPT_AUDIO}"
         else:
-            content.append({"type": "audio", "audio": str(request.reference_audio)})
+            content.append({"type": "audio", "audio": qwen_audio_value(request.reference_audio)})
         return [{"role": "user", "content": content}]
 
     def _build_inputs(self, request: GenerationRequest) -> Any:
@@ -181,4 +147,9 @@ class TransformersConditioner:
         )
         weights = F.softmax(self.layer_weights, dim=0)
         fused = (stacked * weights[:, None, None, None]).sum(dim=0) * self.layer_scale
-        return Conditioning(values=fused, attention_mask=attention_mask.bool())
+        return Conditioning(
+            values=fused,
+            attention_mask=attention_mask.bool(),
+            instruction=request.instruction,
+            seed=request.seed,
+        )

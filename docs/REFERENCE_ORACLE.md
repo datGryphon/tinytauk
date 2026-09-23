@@ -1,41 +1,37 @@
-# Upstream AuK reference oracle
+# AuK reference-audio parity
 
-The reference oracle runs a pinned upstream AuK implementation on CPU and records deterministic parity boundaries for TinyTAuK.
+The maintained parity path compares TinyTAuK's zero-shot reference-audio
+conditioning, Flux sampling, and waveform decoding against a pinned upstream
+AuK implementation. It is a development diagnostic, not a library feature.
 
-## Setup
+Use an isolated Python environment with the pinned upstream AuK checkout for
+the upstream stage runner; it must not replace TinyTAuK's qualified runtime.
+The upstream revision used during qualification is
+`d9f30ffe4231dbc90b48cc83a35d310fece0b060`.
 
 ```bash
-bash scripts/setup-reference
+scripts/run-upstream-parity-staged \
+  /path/to/upstream/python \
+  /path/to/auk_flash.safetensors \
+  /path/to/qwen-snapshot \
+  /path/to/reference.wav \
+  benchmarks/results/upstream-parity \
+  4.5 42
+
+uv run python scripts/local_parity_trace.py \
+  /path/to/reference.wav \
+  benchmarks/results/local-parity \
+  --seconds 4.5 --seed 42
+
+uv run python scripts/compare_parity_traces.py \
+  benchmarks/results/local-parity/trace.pt \
+  benchmarks/results/upstream-parity/trace.pt
 ```
 
-## Run
+The upstream runner uses separate processes for VAE encode, Qwen conditioning,
+Flux sampling, and decode to limit simultaneous model residency. Both trace
+implementations record matched tensor boundaries; the comparator reports the
+first material divergence. Keep the reference clip, target text, seed, model
+checkpoints, and runtime versions consistent when comparing.
 
-```bash
-bash scripts/reference-oracle
-```
-
-Artifacts are written under `benchmarks/results/reference-oracle/` and are intentionally ignored by Git:
-
-- `reference.json` — environment, timing, realtime factor, memory, and tensor metadata.
-- `reference.wav` — generated waveform.
-- `conditioning.pt` — fused Qwen hidden representation consumed by Flux2Edit.
-- `context_mask.pt` — conditioning attention mask.
-- `sampled_latent.pt` — final target latent from the sampler before VAE denormalization/decoding.
-
-Tensor metadata in `reference.json` includes shape, dtype, element count, and a SHA-256 digest over the raw tensor bytes.
-
-## Rules
-
-- Keep the oracle environment isolated from the production TinyTAuK dependency graph.
-- Record upstream commit SHA, AuK-Flash checkpoint location, Qwen model, PyTorch version, Transformers version and seed with every fixture set.
-- Compare intermediate tensor boundaries before relying on final waveform comparisons.
-- Generated reference artifacts remain outside Git unless intentionally promoted to tiny fixtures.
-
-## Current parity boundaries
-
-1. fused Qwen hidden-state representation
-2. conditioning context mask
-3. final target latent produced by the AuK-Flash sampler
-4. decoded waveform
-
-Preprocessed Qwen inputs and fixed-seed sampler/noise capture can be added if the standalone implementation needs a finer debugging boundary.
+Generated results under `benchmarks/results/` are ignored by Git.

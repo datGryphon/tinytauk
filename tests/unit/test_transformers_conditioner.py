@@ -1,12 +1,9 @@
 from pathlib import Path
 
+import numpy as np
 import torch
 
-from tinytauk.conditioning.transformers import (
-    TransformersConditioner,
-    _find_tensor_key,
-)
-from tinytauk.config import ComponentConfig, ModelConfig
+from tinytauk.conditioning.transformers import TransformersConditioner, _find_tensor_key
 from tinytauk.types import GenerationRequest
 
 
@@ -24,7 +21,7 @@ def test_messages_adds_no_prompt_audio_marker() -> None:
     assert messages[0]["content"] == [{"type": "text", "text": "hello|<no_prompt_audio>|"}]
 
 
-def test_messages_appends_reference_audio() -> None:
+def test_messages_appends_reference_audio_path() -> None:
     request = GenerationRequest(
         instruction="hello",
         reference_audio=Path("voice.wav"),
@@ -36,9 +33,13 @@ def test_messages_appends_reference_audio() -> None:
     ]
 
 
-def test_dtype_map_keeps_expected_torch_types() -> None:
-    config = ComponentConfig(backend="transformers", dtype="bf16")
-    model = ModelConfig()
-    assert config.dtype == "bf16"
-    assert model.qwen_model_id == "Qwen/Qwen2.5-Omni-3B"
-    assert torch.bfloat16.is_floating_point
+def test_messages_accepts_reference_audio_tensor() -> None:
+    request = GenerationRequest(
+        instruction="hello",
+        reference_audio=(torch.zeros(16_000), 16_000),
+    )
+    messages = TransformersConditioner._messages(request)
+    audio = messages[0]["content"][1]["audio"]
+
+    assert isinstance(audio, np.ndarray)
+    assert audio.shape == (16_000,)
